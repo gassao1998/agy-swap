@@ -199,6 +199,53 @@ class AppearanceTest(unittest.TestCase):
         self.assertEqual(appearance.resolve_theme("auto", lambda: "\x1b]11;#ffffff\x07"), "light")
         self.assertEqual(appearance.resolve_theme("auto", mock.Mock(side_effect=OSError)), "dark")
 
+    def probe(self, typed: str, *, vt_output=True):
+        """_console_query against a fake console: (reply, console modes afterwards, mode sets, flushes, written, keys left)."""
+        import ctypes
+
+        modes, sets, flushes, keys, written = {10: 0x01F7, 11: 0x0003}, [], [], list(typed), []
+
+        def get_std(h):
+            return {-10 & 0xFFFFFFFF: 10, -11 & 0xFFFFFFFF: 11}[h]
+
+        def get_mode(h, ref):
+            ref._obj.value = modes[h]
+            return 1
+
+        def set_mode(h, m):
+            sets.append((h, m))
+            if h == 11 and m & 0x0004 and not vt_output:
+                return 0
+            modes[h] = m
+            return 1
+
+        def flush(h):
+            flushes.append(h)
+            return 1
+        k32 = mock.Mock(GetStdHandle=get_std, GetConsoleMode=get_mode, SetConsoleMode=set_mode, FlushConsoleInputBuffer=flush)
+        tty = mock.Mock(isatty=lambda: True, write=written.append)
+        with mock.patch.object(ctypes, "WinDLL", return_value=k32), mock.patch("sys.stdin", tty), mock.patch("sys.stdout", tty), \
+                mock.patch("msvcrt.kbhit", lambda: bool(keys)), mock.patch("msvcrt.getwch", lambda: keys.pop(0)), \
+                mock.patch.object(appearance, "_LATE_REPLY_S", 0.05):
+            reply = appearance._console_query()
+        return reply, modes, sets, flushes, "".join(written), "".join(keys)
+
+    @unittest.skipUnless(sys.platform == "win32", "the Windows console probe")
+    def test_console_probe_restores_and_keeps_type_ahead(self):
+        """VT output is on only for the query and both console modes are put back; after a DA1 reply the keys typed since are kept,
+        while without one the input buffer is flushed so a late reply cannot reach the app or the shell."""
+        reply, modes, sets, flushes, written, left = self.probe("x" * 300 + "\x1b]11;rgb:ffff/ffff/ffff\x07\x1b[?61;6cqq")
+        self.assertEqual(appearance.classify(reply), "light")  # keys typed before it did not cut the reply short
+        self.assertEqual(modes, {10: 0x01F7, 11: 0x0003})
+        self.assertIn((11, 0x0007), sets)
+        self.assertEqual((flushes, left, written), ([], "qq", appearance._QUERY))
+        reply, modes, _sets, flushes, _written, _left = self.probe("")
+        self.assertIsNone(appearance.classify(reply))
+        self.assertEqual((modes, flushes), ({10: 0x01F7, 11: 0x0003}, [10]))
+        reply, modes, _sets, _flushes, written, _left = self.probe("", vt_output=False)
+        self.assertIsNone(reply)  # a console without VT output is never sent the query
+        self.assertEqual((written, modes), ("", {10: 0x01F7, 11: 0x0003}))
+
     def test_no_console_no_probe(self):
         with mock.patch("sys.stdin", io.StringIO()), mock.patch("sys.stdout", io.StringIO()) as out:
             self.assertIsNone(appearance._console_query())

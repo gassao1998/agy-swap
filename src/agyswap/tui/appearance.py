@@ -2,9 +2,10 @@
 
 Adapted from cswap 1.0.0's appearance.py (MIT License, claude-swap): send OSC 11 (background colour) and DA1 (device attributes),
 read up to the DA1 reply, which marks the point after any colour reply, and classify the rgb by luminance. cswap skips Windows;
-this version reads the replies through the Windows console instead. The probe runs before textual starts, with a one-second cap,
-and the console input buffer is flushed afterwards, so a late reply never reaches the shell or the app as keystrokes. No reply,
-a pipe, or any failure gives None, which resolves to dark.
+this version reads the replies through the Windows console instead, with VT output turned on for the query and both console
+modes restored. The probe runs before textual starts, with a one-second cap. When the DA1 reply did not arrive, it waits a little
+longer and then flushes the console input buffer, so a late reply does not reach the shell or the app as keystrokes; after a DA1
+reply nothing more is coming, so keys typed meanwhile are kept. No reply, a pipe, or any failure gives None, which resolves to dark.
 """
 from __future__ import annotations
 
@@ -20,6 +21,8 @@ _RGB = re.compile(r"\x1b\]11;rgb:([0-9a-fA-F]+)/([0-9a-fA-F]+)/([0-9a-fA-F]+)(?:
 _HEX = re.compile(r"\x1b\]11;#([0-9a-fA-F]{6})(?:\x07|\x1b\\)")
 _DA1_REPLY = re.compile(r"\x1b\[\?[0-9;:]*c")
 _ENABLE_VIRTUAL_TERMINAL_INPUT = 0x0200
+_ENABLE_VIRTUAL_TERMINAL_PROCESSING = 0x0004
+_LATE_REPLY_S = 0.5
 
 
 def classify(reply: str | None) -> str | None:
@@ -37,14 +40,14 @@ def classify(reply: str | None) -> str | None:
 
 def read_reply(read_char, timeout: float = TIMEOUT_S, clock=time.monotonic) -> str:
     """Collect reply characters until the DA1 reply arrives or the timeout passes. read_char returns one character or None when
-    nothing is waiting."""
+    nothing is waiting. Only the last _MAX_REPLY characters are kept, so keys typed before the reply cannot cut it short."""
     buf, deadline = "", clock() + timeout
-    while clock() < deadline and len(buf) < _MAX_REPLY:
+    while clock() < deadline:
         ch = read_char()
         if ch is None:
             time.sleep(0.01)
             continue
-        buf += ch
+        buf = (buf + ch)[-_MAX_REPLY:]
         if _DA1_REPLY.search(buf):
             break
     return buf
@@ -66,19 +69,33 @@ def _console_query() -> str | None:
         k32.GetConsoleMode.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
         k32.SetConsoleMode.argtypes = [wintypes.HANDLE, wintypes.DWORD]
         k32.FlushConsoleInputBuffer.argtypes = [wintypes.HANDLE]
-        handle = k32.GetStdHandle(-10 & 0xFFFFFFFF)  # STD_INPUT_HANDLE
-        mode = wintypes.DWORD()
-        if not handle or not k32.GetConsoleMode(handle, ctypes.byref(mode)):
+        handle, out = k32.GetStdHandle(-10 & 0xFFFFFFFF), k32.GetStdHandle(-11 & 0xFFFFFFFF)  # STD_INPUT_HANDLE, STD_OUTPUT_HANDLE
+        mode, out_mode = wintypes.DWORD(), wintypes.DWORD()
+        if not handle or not out or not k32.GetConsoleMode(handle, ctypes.byref(mode)) \
+                or not k32.GetConsoleMode(out, ctypes.byref(out_mode)):
             return None
-        if not k32.SetConsoleMode(handle, mode.value | _ENABLE_VIRTUAL_TERMINAL_INPUT):
+        # A console without VT output would print the query as text and never answer it
+        if not k32.SetConsoleMode(out, out_mode.value | _ENABLE_VIRTUAL_TERMINAL_PROCESSING):
             return None
         try:
-            sys.stdout.write(_QUERY)
-            sys.stdout.flush()
-            return read_reply(lambda: msvcrt.getwch() if msvcrt.kbhit() else None)
+            if not k32.SetConsoleMode(handle, mode.value | _ENABLE_VIRTUAL_TERMINAL_INPUT):
+                return None
+            answered = False
+            try:
+                sys.stdout.write(_QUERY)
+                sys.stdout.flush()
+                read_char = lambda: msvcrt.getwch() if msvcrt.kbhit() else None  # noqa: E731
+                reply = read_reply(read_char)
+                answered = bool(_DA1_REPLY.search(reply))
+                if not answered:  # give a slow terminal a little longer to finish before the rest is dropped
+                    read_reply(read_char, timeout=_LATE_REPLY_S)
+                return reply
+            finally:
+                k32.SetConsoleMode(handle, mode.value)
+                if not answered:  # after the DA1 reply nothing more is coming, so keys typed since then are kept
+                    k32.FlushConsoleInputBuffer(handle)
         finally:
-            k32.SetConsoleMode(handle, mode.value)
-            k32.FlushConsoleInputBuffer(handle)
+            k32.SetConsoleMode(out, out_mode.value)
     except (OSError, AttributeError, ValueError, ImportError):
         return None
 
