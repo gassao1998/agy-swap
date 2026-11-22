@@ -101,13 +101,20 @@
   windows as bars with switch-line ticks and reset countdowns, the other accounts on one line each, and a menu
   (switch, watch, auto-switch view, add the current login, disable or enable, remove, theme); keys `s` switch
   (`b` best pick), `w` watch, `g` auto view, `f` query every account now, `q` quit, `ctrl+t` theme. Switching,
-  removing and adding ask for confirmation first, with Cancel focused, because a switch is global and the
-  Antigravity App follows it. Redraws read only the usage cache every 3 seconds; agy starts in a separate lane
-  when an account's cache plan is due, and Credential Manager is read at most once a minute, a failed read
-  included. The auto view runs the auto engine in dry-run until `l` is confirmed, shows the strategy, thresholds,
-  model categories and each candidate's windows with reset times, and takes a threshold for that view only with
-  `t` and the arrow keys. `ui.theme=auto` probes the console before textual starts, flushes the input buffer
-  afterwards and falls back to dark.
+  removing, adding, disabling and enabling ask for confirmation first, with Cancel focused (no key moves the
+  focus round to the confirm button, and a fast double Enter never stacks two prompts), because a switch is
+  global and the Antigravity App follows it. Redraws read only the usage cache every 3 seconds; agy starts in a
+  separate lane when an account's cache plan is due, and Credential Manager is read at most once a minute, a
+  failed read included. Readings older than 15 minutes are dimmed and carry their age on every page, and a
+  snapshot that stops updating says how old it is. Quitting ends a running agy query after a short grace instead
+  of waiting for it, and output from background threads never mixes into an action's result. The auto view runs
+  the auto engine in dry-run until `l` is confirmed, shows the strategy, thresholds, model categories and each
+  candidate's windows with reset times, and takes a threshold for that view only with `t` and the arrow keys
+  (Enter applies it, Esc puts it back). It runs one engine at a time: after going live, back to dry-run or
+  leaving, the next engine and the dashboard's own queries start only once the previous engine thread has
+  returned, with a STOPPING badge meanwhile, and an engine that crashes shows STOPPED. `ui.theme=auto` probes
+  the console before textual starts, with VT output on for the query and both console modes restored, flushes
+  the input buffer only when no reply arrived, and falls back to dark.
 - Account folders under `%LOCALAPPDATA%\agyswap\profiles\` are restricted to the current Windows user before any
   login file is written to them.
 - `list` and `status` group each model category's limits under its name, 5h before 7d, with cswap's tree
@@ -116,7 +123,7 @@
   switching and runs work, every command, the settings, where data is stored, security notes, and a section
   on Google's terms (the Antigravity FAQ does not support automated account rotation or wrapping `agy` under
   consumer plans, and the terms allow suspension), with links to the sources.
-- Offline test suite (326 tests; the 5 dashboard tests that drive textual's headless Pilot skip without it). An audit hook makes any test that reaches the real Credential Manager, the
+- Offline test suite (340 tests; the 13 dashboard tests that drive textual's headless Pilot skip without it). An audit hook makes any test that reaches the real Credential Manager, the
   user's folders, `agy` or `git` fail at once.
 - Git hooks in `.githooks/` (enable with `git config core.hooksPath .githooks`): commit messages must be in
   English, lines added to English-only files (README.md, CHANGELOG.md, LICENSE, THIRD_PARTY_NOTICES.md,
@@ -166,7 +173,9 @@
   cached or printed.
 - `auto` calls a switch off under `.lock` when the global login changed hands or the target was disabled while
   usage was being queried (`no-switch` reason `state-changed`), so it never moves off an account just chosen by
-  hand and never records anti-flap state that mixes two accounts.
+  hand and never records anti-flap state that mixes two accounts. An engine that has been stopped (the
+  dashboard's auto view going back to dry-run, being left, or the dashboard quitting) calls its switch off the
+  same way.
 - `auto` failover counters are saved even when a tick raises, are cleared in the same write that records a
   switch, are left alone by a tick without a managed active account, and are merged under the state lock, so a
   loop and a scheduled `--once` add to each other's count instead of overwriting it. An active account whose
