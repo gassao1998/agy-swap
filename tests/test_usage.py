@@ -54,7 +54,15 @@ class ParseTest(unittest.TestCase):
         for value in ("0001-01-01T00:00:00", "9999-12-31T23:59:59", "garbage", "2026-11-28T10:45:55Z[0m", 5, None):
             self.assertIsNone(pace.parse_ts(value), value)
         rows = usage.parse_usage("Gemini Models\tWeekly Limit Remaining\t50%\t0001-01-01T00:00:00\n")
-        self.assertEqual(output.usage_lines(rows, 1_800_000_000.0, 1_800_000_000.0), ["Gemini Models 7d:  50%"])
+        self.assertEqual(output.usage_lines(rows, 1_800_000_000.0, 1_800_000_000.0), ["Gemini Models", "└ 7d:  50%"])
+
+    def test_limits_grouped_under_their_category_5h_first(self):
+        from agyswap import output
+        rows = usage.parse_usage("Gemini Models\tWeekly Limit Remaining\t90%\t\n"
+                                 "Gemini Models\tFive Hour Limit Remaining\t80%\t\n"
+                                 "Claude and GPT models\tWeekly Limit Remaining\t70%\t\n")
+        self.assertEqual(output.usage_lines(rows, None, 1_800_000_000.0),
+                         ["Gemini Models", "├ 5h:  20%", "└ 7d:  10%", "Claude and GPT models", "└ 7d:  30%"])
 
     def test_classify(self):
         self.assertTrue(usage.classify(AUTH).relogin)

@@ -328,9 +328,10 @@ class SmallFixesTest(Base):
         now = fetched + 7200
         lines = output.entry_lines(UsageCache(clock=lambda: now).entry("school"), now)
         self.assertIn("figures below were fetched 2h ago", lines[0])
-        self.assertIn("passed", lines[1])
+        self.assertIn("Gemini Models", lines[1])
+        self.assertIn("passed", lines[2])
         self.assertNotIn("in 0m", "".join(lines))
-        self.assertIn("in 22h", lines[2])
+        self.assertIn("in 22h", lines[4])
 
     def test_token_status_reports_unreadable_file(self):
         with mock.patch("agyswap.commands.read_token_file_stat", return_value=None):

@@ -173,26 +173,44 @@ ERROR_NOTES = {
 }
 
 
-def usage_lines(usage: dict, fetched_at: float | None, now: float | None = None) -> list[str]:
-    """One line per limit per model category. Gemini's 7d and 5h are already in scoped, so they are not printed twice."""
-    rows = []
+WINDOW_ORDER = {"5h": 0, "7d": 1}
+
+
+def _window_body(w: dict, fetched_at: float | None, now: float | None) -> str:
+    if w["pct"] >= 100:
+        marker = "  (!)"
+    else:
+        p = pace.compute(w, fetched_at) if w.get("window") == "7d" else None
+        marker = "  (ahead of pace)" if p and p.ahead else ""
+    cell = reset_strings(w.get("resets_at"), now)
+    body = f"{w['pct']:>3.0f}%"
+    reset_ts = pace.parse_ts(w.get("resets_at"))
+    if cell and reset_ts is not None and reset_ts < (time.time() if now is None else now):
+        body += f"   resets {cell[1]:<12}  passed (this figure is from before the reset)"  # not printed as "in 0m" (cswap #376)
+    elif cell:
+        body += f"   resets {cell[1]:<12}  in {cell[0]}"
+    return body + marker
+
+
+def usage_rows(usage: dict, fetched_at: float | None, now: float | None = None) -> list[tuple[str, str]]:
+    """(tree mark, text) per line: each model category on a line of its own and its limits under it, 5h before 7d, marked with
+    ├ and └ like cswap's. Keeping the category name off the limit lines keeps them short enough for a phone over SSH.
+    Gemini's 7d and 5h are already in scoped, so they are not printed twice."""
+    groups: dict[str, list[dict]] = {}
     for w in usage.get("scoped") or []:
-        label = f"{w['name']} {w.get('window', '7d')}"
-        if w["pct"] >= 100:
-            marker = "  (!)"
-        else:
-            p = pace.compute(w, fetched_at) if w.get("window") == "7d" else None
-            marker = "  (ahead of pace)" if p and p.ahead else ""
-        cell = reset_strings(w.get("resets_at"), now)
-        body = f"{w['pct']:>3.0f}%"
-        reset_ts = pace.parse_ts(w.get("resets_at"))
-        if cell and reset_ts is not None and reset_ts < (time.time() if now is None else now):
-            body += f"   resets {cell[1]:<12}  passed (this figure is from before the reset)"  # not printed as "in 0m" (cswap #376)
-        elif cell:
-            body += f"   resets {cell[1]:<12}  in {cell[0]}"
-        rows.append((label, body + marker))
-    width = max((len(label) for label, _ in rows), default=0) + 1
-    return [f"{label + ':':<{width}} {body}" for label, body in rows]
+        groups.setdefault(w["name"], []).append(w)
+    rows = []
+    for name, windows in groups.items():
+        rows.append(("", name))
+        windows.sort(key=lambda w: WINDOW_ORDER.get(w.get("window", "7d"), len(WINDOW_ORDER)))
+        for i, w in enumerate(windows):
+            rows.append(("└" if i == len(windows) - 1 else "├", f"{w.get('window', '7d')}: {_window_body(w, fetched_at, now)}"))
+    return rows
+
+
+def usage_lines(usage: dict, fetched_at: float | None, now: float | None = None) -> list[str]:
+    """usage_rows as plain text."""
+    return [f"{mark} {text}" if mark else text for mark, text in usage_rows(usage, fetched_at, now)]
 
 
 VIA_FOLDER_NOTE = ("Credential Manager cannot be read here (for example over SSH): usage was read through the account folder copy, "
@@ -213,13 +231,13 @@ def _entry_lines(entry: Entry, now: float) -> list[str]:
                 out.append(f"{dimmed('└')} {muted(f'last seen {top:.0f}% used · {format_age(entry.fetched_at, now)}')}")
         return out
     if entry.last_good is not None:
-        lines = usage_lines(entry.last_good, entry.fetched_at, now)
-        if lines and entry.age_s is not None and entry.age_s > SERVE_TTL_S:
+        rows = usage_rows(entry.last_good, entry.fetched_at, now)
+        if rows and entry.age_s is not None and entry.age_s > SERVE_TTL_S:
             # The age of stale data goes on the first line: marking only the last line makes the lines above look freshly fetched (cswap #376)
-            lines.insert(0, f"figures below were fetched {format_age(entry.fetched_at, now)}")
+            rows.insert(0, ("", f"figures below were fetched {format_age(entry.fetched_at, now)}"))
         if entry.last_error and entry.age_s is not None and entry.age_s > SERVE_TTL_S:
-            lines.append(f"latest fetch failed ({ERROR_NOTES.get(entry.last_error, entry.last_error)})")
-        return [f"{dimmed('└' if i == len(lines) - 1 else '├')} {muted(line)}" for i, line in enumerate(lines)]
+            rows.append(("", f"latest fetch failed ({ERROR_NOTES.get(entry.last_error, entry.last_error)})"))
+        return [f"{dimmed(mark)} {muted(text)}" if mark else muted(text) for mark, text in rows]
     detail = "usage unavailable"
     if entry.last_error:
         detail += f" ({ERROR_NOTES.get(entry.last_error, entry.last_error)})"
