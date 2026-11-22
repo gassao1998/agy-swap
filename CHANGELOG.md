@@ -110,7 +110,13 @@
   afterwards and falls back to dark.
 - Account folders under `%LOCALAPPDATA%\agyswap\profiles\` are restricted to the current Windows user before any
   login file is written to them.
-- Offline test suite (325 tests; the 5 dashboard tests that drive textual's headless Pilot skip without it). An audit hook makes any test that reaches the real Credential Manager, the
+- `list` and `status` group each model category's limits under its name, 5h before 7d, with cswap's tree
+  characters, so lines stay short enough for a phone over SSH. The `--json` output is unchanged.
+- README.md in English and README.zh-TW.md in Traditional Chinese: install, quick start, the dashboard, how
+  switching and runs work, every command, the settings, where data is stored, security notes, and a section
+  on Google's terms (the Antigravity FAQ does not support automated account rotation or wrapping `agy` under
+  consumer plans, and the terms allow suspension), with links to the sources.
+- Offline test suite (326 tests; the 5 dashboard tests that drive textual's headless Pilot skip without it). An audit hook makes any test that reaches the real Credential Manager, the
   user's folders, `agy` or `git` fail at once.
 - Git hooks in `.githooks/` (enable with `git config core.hooksPath .githooks`): commit messages must be in
   English, lines added to English-only files (README.md, CHANGELOG.md, LICENSE, THIRD_PARTY_NOTICES.md,
