@@ -383,6 +383,58 @@ class PilotTest(Roster, unittest.IsolatedAsyncioTestCase):
         switch_to.assert_called_once_with("2")
         self.assertEqual(self.read_live.calls, 2)  # read again after the switch
 
+    async def test_prompts_never_confirm_by_accident(self):
+        """Cancel has the focus, no key moves it round to the confirm button, a second prompt never stacks, and disabling an account
+        asks first too (its submenu opens on the first account, so a double Enter would toggle it)."""
+        from agyswap.tui.app import ConfirmModal
+
+        with mock.patch("agyswap.manage.add") as add, mock.patch("agyswap.manage.set_disabled", return_value=[]) as set_disabled:
+            app = self.app()
+            async with app.run_test(size=(120, 40)) as pilot:
+                await self.settle(app, pilot)
+                app.action_add_current()
+                app.action_add_current()
+                await pilot.pause()
+                self.assertEqual(sum(isinstance(s, ConfirmModal) for s in app.screen_stack), 1)
+                self.assertEqual(app.screen.focused.id, "no")
+                await pilot.press("right", "tab")
+                self.assertEqual(app.screen.focused.id, "no")
+                await pilot.press("left")
+                self.assertEqual(app.screen.focused.id, "yes")
+                await pilot.press("right", "enter")
+                await self.settle(app, pilot)
+                self.assertNotIsInstance(app.screen, ConfirmModal)
+                app.do_toggle_disabled("1")
+                await pilot.pause()
+                self.assertIsInstance(app.screen, ConfirmModal)
+                await pilot.press("enter")
+                app.do_toggle_disabled("9")  # removed meanwhile: a warning, not a crash
+                app.do_toggle_disabled("2")
+                await pilot.press("y")
+                await self.settle(app, pilot)
+        add.assert_not_called()
+        set_disabled.assert_called_once_with("2", True)
+
+    async def test_switch_page_best_pick_and_watch_focus(self):
+        from agyswap.tui.app import ConfirmModal
+        from agyswap.tui.screens import DashboardScreen, SwitchScreen, WatchScreen
+
+        app = self.app()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await self.settle(app, pilot)
+            await pilot.press("s", "b")  # like Enter, b leaves the switch page before asking
+            await pilot.pause()
+            self.assertIsInstance(app.screen, ConfirmModal)
+            self.assertFalse(any(isinstance(s, SwitchScreen) for s in app.screen_stack))
+            await pilot.press("n", "w")
+            await self.settle(app, pilot)
+            self.assertIsInstance(app.screen, WatchScreen)
+            self.assertIsNone(app.screen.focused)
+            await pilot.press("down", "down")
+            self.assertIsNone(app.screen.query_one("#accounts").index)  # scrolled, no cursor until s arms selection
+            await pilot.press("escape")
+            self.assertIsInstance(app.screen, DashboardScreen)
+
     async def test_watch_page_and_theme(self):
         from agyswap.tui.screens import WatchScreen
 

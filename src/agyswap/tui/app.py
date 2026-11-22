@@ -182,8 +182,11 @@ def mini_text(snap: Snapshot, num: str, palette: Palette) -> Text:
 class ConfirmModal(ModalScreen[bool]):
     """Yes/No; dismisses True only on an explicit yes. Left/right move between the buttons, y/n answer, Esc cancels."""
 
+    AUTO_FOCUS = "#no"  # Enter alone never confirms
+    # focus_next would wrap from Cancel round to the confirm button, so the keys name their button instead
     BINDINGS = [Binding("y", "answer(True)", show=False), Binding("n,escape", "answer(False)", show=False),
-                Binding("left", "app.focus_previous", show=False), Binding("right", "app.focus_next", show=False)]
+                Binding("left,shift+tab", "focus_button('yes')", show=False),
+                Binding("right,tab", "focus_button('no')", show=False)]
 
     def __init__(self, message: str, *, title: str = "Confirm", yes_label: str = "Yes") -> None:
         super().__init__()
@@ -198,8 +201,8 @@ class ConfirmModal(ModalScreen[bool]):
                 yield Button("Cancel", id="no")
             yield Static(f"← → · enter  ·  y {self._yes.lower()}  ·  n / esc cancel", classes="modal-hint")
 
-    def on_mount(self) -> None:
-        self.query_one("#no", Button).focus()  # Enter alone never confirms
+    def action_focus_button(self, name: str) -> None:
+        self.query_one(f"#{name}", Button).focus()
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         self.dismiss(event.button.id == "yes")
@@ -416,6 +419,8 @@ class AgyswapApp(App):
             self.notify(result.text.splitlines()[-1])
 
     def confirm(self, message: str, title: str, yes: str, then) -> None:
+        if any(isinstance(s, ConfirmModal) for s in self.screen_stack):
+            return  # a second Enter that arrived before the first prompt showed
         self.push_screen(ConfirmModal(message, title=title, yes_label=yes), lambda ok: then() if ok else None)
 
     def _label(self, num: str) -> str:
@@ -438,10 +443,18 @@ class AgyswapApp(App):
                                                                         fetcher=self.source.fetcher_for())))
 
     def do_toggle_disabled(self, num: str) -> None:
+        """Asks first like every other change: the submenu opens on the first account, so a double Enter would toggle it."""
         from agyswap import manage
 
-        disabled = bool(self.snapshot and self.snapshot.record(num).get("disabled"))
-        self.start_action(f"{'Enable' if disabled else 'Disable'} Account-{num}", partial(manage.set_disabled, num, not disabled))
+        if not (self.snapshot and num in self.snapshot.numbers):
+            self.notify(f"Account-{num} is no longer managed", severity="warning")
+            return
+        disabled = bool(self.snapshot.record(num).get("disabled"))
+        verb = "Enable" if disabled else "Disable"
+        effect = ("Switch best and auto-switch may pick it again." if disabled
+                  else "Switch best and auto-switch skip it until it is enabled again.")
+        self.confirm(f"{verb} {self._label(num)}?\n\n{effect}", f"{verb} account", verb,
+                     lambda: self.start_action(f"{verb} Account-{num}", partial(manage.set_disabled, num, not disabled)))
 
     def confirm_remove(self, num: str) -> None:
         from agyswap import manage

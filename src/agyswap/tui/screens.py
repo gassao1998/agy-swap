@@ -151,7 +151,8 @@ class DashboardScreen(Screen):
              "add": app.action_add_current, "quit": app.exit}[action]()
 
     def action_open_switch(self) -> None:
-        self.app.push_screen(SwitchScreen())
+        if not isinstance(self.app.screen, SwitchScreen):  # a second Enter that arrived before the page showed
+            self.app.push_screen(SwitchScreen())
 
     async def action_menu_back(self) -> None:
         await self._pop()
@@ -230,7 +231,7 @@ class AccountListScreen(Screen):
 
 class SwitchScreen(AccountListScreen):
     TITLE_TEXT = "switch to which account?"
-    BINDINGS = [Binding("enter", "pick", "Switch", priority=True), Binding("b", "app.switch_best", "Best pick"),
+    BINDINGS = [Binding("enter", "pick", "Switch", priority=True), Binding("b", "switch_best", "Best pick"),
                 Binding("escape,q,s", "app.pop_screen", "Back"), Binding("j", "cursor(1)", show=False),
                 Binding("k", "cursor(-1)", show=False)]
 
@@ -245,6 +246,10 @@ class SwitchScreen(AccountListScreen):
             self.app.pop_screen()
             self.app.do_switch(num)
 
+    def action_switch_best(self) -> None:
+        self.app.pop_screen()  # as Enter does: the prompt and its outcome land on the dashboard
+        self.app.action_switch_best()
+
     def action_cursor(self, step: int) -> None:
         listview = self.query_one("#accounts", ListView)
         listview.action_cursor_down() if step > 0 else listview.action_cursor_up()
@@ -253,9 +258,10 @@ class SwitchScreen(AccountListScreen):
 class WatchScreen(AccountListScreen):
     """A hands-off monitor; `s` arms selection, Enter switches (after the confirmation) and keeps watching, Esc disarms, then leaves."""
 
+    AUTO_FOCUS = ""  # (None means the app's "*") the list takes focus only while selecting, so no cursor shows unarmed
     BINDINGS = [Binding("s", "toggle_select", "Switch"), Binding("enter", "pick", "Confirm", priority=True),
                 Binding("f", "app.refresh_full", "Refresh", show=False), Binding("escape,q", "back", "Back"),
-                Binding("down,j", "nav(1)", show=False), Binding("up,k", "nav(-1)", show=False)]
+                Binding("down,j", "nav(1)", show=False, priority=True), Binding("up,k", "nav(-1)", show=False, priority=True)]
 
     def __init__(self) -> None:
         super().__init__()
