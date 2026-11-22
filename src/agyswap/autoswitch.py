@@ -865,6 +865,8 @@ class Engine:
                 self._emit("no-switch", reason="cooldown")
                 return Outcome.NO_ACTION
             def check(ctx, num):
+                if self._stop.is_set():  # stopped while this tick queried agy (the dashboard went back to dry-run or closed)
+                    raise Stale("the engine was stopped")
                 if ctx.live_owner != current:
                     raise Stale(f"the active account is no longer Account-{current}")
                 if ctx.data["accounts"][num].get("disabled"):
@@ -895,7 +897,12 @@ class Engine:
 
     # -- loop --
     def stop(self) -> None:
+        """No switch starts after this (checked again under .lock); a tick in progress still finishes its queries."""
         self._stop.set()
+
+    @property
+    def stopped(self) -> bool:
+        return self._stop.is_set()
 
     def next_delay(self, outcome: Outcome) -> float:
         interval = self.cfg.interval_seconds

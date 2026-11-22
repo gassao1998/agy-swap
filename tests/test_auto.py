@@ -554,6 +554,21 @@ class OnceAndSafetyTest(Base):
             self.assertIsNone(self.state())  # no anti-flap state mixing two accounts
             self.set_account("2", disabled=False)
 
+    def test_a_stopped_engine_never_switches(self):
+        """Stopped while its tick was deciding (the dashboard went back to dry-run): the switch is called off under .lock."""
+        self.seed_all(text(95), text(10), text(30))
+        self.events = []
+
+        def switcher(target, **kw):
+            engine.stop()
+            return autoswitch.switch.switch_to(target, **kw)
+
+        engine = Engine(AutoSettings(), self.events.append, store=self.store, fetcher=self.agy, clock=self.clock, switcher=switcher)
+        self.assertEqual(engine.tick(), Outcome.NO_ACTION)
+        self.assertTrue(engine.stopped)
+        self.assertEqual(self.store.writes, [])
+        self.assertNotIn("switch", self.kinds())
+
     def test_quarantine_and_release(self):
         self.seed_all(text(50), text(10))
         self.now += 3601
