@@ -153,9 +153,12 @@ def card_text(snap: Snapshot, num: str, width: int, palette: Palette, *, thresho
     return text
 
 
-def mini_text(snap: Snapshot, num: str, palette: Palette) -> Text:
-    """One line for an inactive account: the Gemini 5h and 7d figures, and any category at its limit (cswap mini_account_text)."""
+def mini_text(snap: Snapshot, num: str, palette: Palette, now: float | None = None) -> Text:
+    """One line for an inactive account: the Gemini 5h and 7d figures, and any category at its limit (cswap mini_account_text).
+    A reading older than STALE_OK_S is dimmed and carries its age, as in the full card."""
     record, entry = {**snap.record(num), "_num": num}, snap.entries[num]
+    stale = entry.age_s is not None and entry.age_s > STALE_OK_S
+    dim = " dim" if stale else ""
     text = Text(no_wrap=True, overflow="ellipsis")
     _name(text, record, palette, f"bold {palette.muted}")
     if record.get("disabled"):
@@ -168,13 +171,15 @@ def mini_text(snap: Snapshot, num: str, palette: Palette) -> Text:
     for key, label in (("five_hour", "5h"), ("seven_day", "7d")):
         w = value.get(key)
         if isinstance(w, dict) and isinstance(w.get("pct"), (int, float)):
-            parts.append((f"{label} {w['pct']:.0f}%", palette.severity(w["pct"])))
-    parts += [(f"{w['name']} {w.get('window', '7d')} (!)", palette.crit) for w in value.get("scoped") or []
+            parts.append((f"{label} {w['pct']:.0f}%", palette.severity(w["pct"]) + dim))
+    parts += [(f"{w['name']} {w.get('window', '7d')} (!)", palette.crit + dim) for w in value.get("scoped") or []
               if isinstance(w, dict) and isinstance(w.get("pct"), (int, float)) and w["pct"] >= 100]
     for i, (part, style) in enumerate(parts or [("usage unknown", palette.muted)]):
         if i:
             text.append(" · ", style=palette.track)
         text.append(part, style=style)
+    if parts and stale and entry.fetched_at is not None:
+        text.append(f"  · {format_age(entry.fetched_at, time.time() if now is None else now)}", style=palette.muted)
     return text
 
 
@@ -280,9 +285,9 @@ class AgyswapApp(App):
         self._start, self.theme_setting, self._detected = start, theme_setting, detected
         self.auto_page = False
         self.engines: set = set()  # auto engines whose threads have not returned yet (a stopped one may still be finishing a tick)
-        self._drawing = self._fetching = self._full_next = False
+        self._drawing = self._fetching = self._full_next = self._redraw_again = False
         self._fetch_started: float | None = None
-        self._last_error = ""
+        self._last_error: dict[str, str] = {}  # per lane, cleared when that lane next succeeds
         loaded = settings.load()
         self.threshold_pct: float = loaded["autoswitch.threshold"]
         self.weekly_threshold_pct: float | None = loaded["autoswitch.weeklyThreshold"]
@@ -312,8 +317,7 @@ class AgyswapApp(App):
     # -- redraw and query lanes --
     def _tick(self) -> None:
         if not self._drawing:
-            self._drawing = True
-            self.run_worker(self._draw_blocking, thread=True, group="draw", exit_on_error=False)
+            self._start_draw()
         if not self.store_only and not self._fetching:
             self._fetching, self._fetch_started = True, time.time()
             full, self._full_next = self._full_next, False
@@ -341,9 +345,10 @@ class AgyswapApp(App):
         self._call(self._apply, self.source.take())
 
     def _apply(self, snap: Snapshot) -> None:
-        self._drawing, self._last_error = False, ""
+        self._last_error.pop("draw", None)
         self.snapshot = snap
         self._update_status()
+        self._draw_finished()
 
     def _fetch_blocking(self, full: bool) -> None:
         try:
@@ -354,13 +359,27 @@ class AgyswapApp(App):
 
     def _fetched(self, queried: bool) -> None:
         self._fetching, self._fetch_started = False, None
+        self._last_error.pop("fetch", None)
         if queried:  # the cache changed; otherwise the tick's own redraw already showed everything
             self.redraw()
 
+    def _start_draw(self) -> None:
+        self._drawing = True
+        self.run_worker(self._draw_blocking, thread=True, group="draw", exit_on_error=False)
+
+    def _draw_finished(self) -> None:
+        self._drawing = False
+        if self._redraw_again:
+            self._redraw_again = False
+            self._start_draw()
+
     def redraw(self) -> None:
-        if not self._drawing:
-            self._drawing = True
-            self.run_worker(self._draw_blocking, thread=True, group="draw", exit_on_error=False)
+        """After a change (a switch, an engine event): a draw already running may have read the state before it, so another draw
+        follows that one instead of the request being dropped."""
+        if self._drawing:
+            self._redraw_again = True
+        else:
+            self._start_draw()
 
     def _update_status(self) -> None:
         parts, now = [], time.time()
@@ -375,19 +394,22 @@ class AgyswapApp(App):
             return
         group = event.worker.group
         if group == "draw":
-            self._drawing = False
+            self._draw_finished()
         elif group == "fetch":
             self._fetching, self._fetch_started = False, None
-        elif group == "action":
+        elif group == "action":  # it may have changed the login before it failed
             self.busy = False
+            self.source.forget_live()
+            self.redraw()
         if event.state is WorkerState.CANCELLED:
             return
         msg = f"{group} failed: {event.worker.error}"
-        if msg != self._last_error:
-            self._last_error = msg
-            self.notify(msg, severity="error" if group in ("action", "engine") else "warning", timeout=6)
+        if group == "action" or self._last_error.get(group) != msg:  # a lane failing the same way every tick says so once
+            self._last_error[group] = msg
+            self.notify(msg, severity="error" if group == "action" else "warning", timeout=6)
 
     def action_refresh_full(self) -> None:
+        self.source.forget_live()  # an explicit refresh reads Credential Manager again too
         self._full_next = True
         self._tick()
         self.notify("Querying agy for every account…", timeout=2)

@@ -303,10 +303,13 @@ class PilotTest(Roster, unittest.IsolatedAsyncioTestCase):
         return AgyswapApp(source=self.source, theme_setting="dark", **kwargs)
 
     async def settle(self, app, pilot):
+        from textual.worker import WorkerFailed
+
         for _ in range(3):
             waiting = [w for w in app.workers if w.group != "engine"]  # an auto engine runs until it is stopped
             if waiting:
-                await app.workers.wait_for_complete(waiting)
+                with contextlib.suppress(WorkerFailed):  # the app reports a failed worker itself
+                    await app.workers.wait_for_complete(waiting)
             await pilot.pause()
 
     async def until(self, pilot, condition, timeout=5.0):
@@ -434,6 +437,49 @@ class PilotTest(Roster, unittest.IsolatedAsyncioTestCase):
             app.redraw()
             await self.settle(app, pilot)
             self.assertEqual(len(screen.query_one("#menu").children), 4)  # three accounts and back
+
+    def test_stale_figures_look_stale(self):
+        """An inactive account's one-liner dims a reading older than STALE_OK_S and gives its age, as the full card does."""
+        from agyswap.tui.app import DARK, Palette, mini_text
+
+        now = time.time()
+        UsageCache(clock=lambda: now - 7200).record_success("school", parse_usage(FREE), 600.0)
+        snap = SnapshotSource(read_live=self.read_live, fetcher=self.agy).take()
+        line = mini_text(snap, "2", Palette.of(DARK), now=now)
+        self.assertIn("2h ago", line.plain)
+        self.assertTrue(all("dim" in str(span.style) for span in line.spans if "%" in line.plain[span.start:span.end]))
+
+    async def test_stale_snapshot_and_errors_show_everywhere(self):
+        """A frozen snapshot says so on the dashboard and the switch page, a fetch lane failing the same way every tick warns once,
+        and a redraw asked for during a draw runs after it instead of being dropped."""
+        import dataclasses
+
+        from agyswap.tui.screens import SwitchScreen
+
+        app = self.app()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await self.settle(app, pilot)
+            app.snapshot = dataclasses.replace(app.snapshot, taken_at=time.time() - 180)
+            app._update_status()
+            await pilot.pause()
+            self.assertIn("snapshot 3m ago", str(app.screen.query_one("#accounts-panel").render()))
+            await pilot.press("s")
+            await pilot.pause()
+            self.assertIsInstance(app.screen, SwitchScreen)
+            self.assertIn("snapshot 3m ago", str(app.screen.query_one("#list-title").render()))
+            await pilot.press("escape")
+            with mock.patch.object(self.source, "refresh", side_effect=AgyswapError("roster unreadable")), \
+                    mock.patch.object(app, "notify") as notify:
+                for _ in range(3):
+                    app._tick()
+                    await self.settle(app, pilot)
+            self.assertEqual(sum("fetch failed" in str(c.args[0]) for c in notify.call_args_list), 1)
+            app._drawing = True  # a draw in progress
+            app.redraw()
+            self.assertFalse([w for w in app.workers if w.group == "draw" and not w.is_finished])
+            app._apply(app.snapshot)  # that draw lands: the asked-for one starts now
+            self.assertTrue(app._drawing)
+            await self.settle(app, pilot)
 
     async def test_switch_page_best_pick_and_watch_focus(self):
         from agyswap.tui.app import ConfirmModal

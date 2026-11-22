@@ -40,8 +40,8 @@ class AccountsPanel(Static):
         self._show_minis = show_minis
 
     def on_mount(self) -> None:
-        self.watch(self.app, "snapshot", lambda _s: self.refresh(layout=True))
-        self.watch(self.app, "theme", lambda _t: self.refresh(layout=True))
+        for name in ("snapshot", "theme", "refresh_status"):
+            self.watch(self.app, name, lambda _v: self.refresh(layout=True))
 
     def render(self) -> Text:
         app: AgyswapApp = self.app  # type: ignore[assignment]
@@ -64,6 +64,8 @@ class AccountsPanel(Static):
                 if num != active:
                     out.append("\n")
                     out.append(mini_text(snap, num, palette))
+        if app.refresh_status:  # "snapshot 3m ago" when redraws keep failing, so a frozen page does not pass for a live one
+            out.append(f"\n{app.refresh_status}", style=palette.muted)
         return out
 
 
@@ -217,11 +219,15 @@ class AccountListScreen(Screen):
         yield Footer()
 
     def on_mount(self) -> None:
-        self.query_one("#list-title", Static).update(self.title_text())
+        self.watch(self.app, "refresh_status", lambda _s: self.update_title())
         self.watch(self.app, "snapshot", self._on_snapshot)
 
+    def update_title(self) -> None:
+        self.query_one("#list-title", Static).update(self.title_text())
+
     def title_text(self) -> str:
-        return self.TITLE_TEXT
+        status = self.app.refresh_status
+        return f"{self.TITLE_TEXT} · {status}" if status else self.TITLE_TEXT
 
     def cursor_on(self) -> bool:
         return True
@@ -282,19 +288,14 @@ class WatchScreen(AccountListScreen):
                 Binding("f", "app.refresh_full", "Refresh", show=False), Binding("escape,q", "back", "Back"),
                 Binding("down,j", "nav(1)", show=False, priority=True), Binding("up,k", "nav(-1)", show=False, priority=True)]
 
+    TITLE_TEXT = "watching all accounts"
+
     def __init__(self) -> None:
         super().__init__()
         self._selecting = False
 
-    def on_mount(self) -> None:
-        self.watch(self.app, "refresh_status", lambda _s: self.query_one("#list-title", Static).update(self.title_text()))
-        super().on_mount()
-
     def title_text(self) -> str:
-        if self._selecting:
-            return "switch to which account? · enter confirm · esc cancel"
-        status = self.app.refresh_status
-        return f"watching all accounts · {status}" if status else "watching all accounts"
+        return "switch to which account? · enter confirm · esc cancel" if self._selecting else super().title_text()
 
     def cursor_on(self) -> bool:
         return self._selecting
@@ -312,7 +313,7 @@ class WatchScreen(AccountListScreen):
         else:
             listview.index = None
             self.set_focus(None)
-        self.query_one("#list-title", Static).update(self.title_text())
+        self.update_title()
         self.refresh_bindings()
 
     def action_toggle_select(self) -> None:
@@ -542,8 +543,9 @@ class AutoScreen(Screen):
             block.append(f"\n  {num:>2}  {record.get('alias') or record.get('email', '')}", style=palette.fg)
             if entry.sentinel is not None:
                 block.append(f"  {output.SENTINEL_NOTES.get(entry.sentinel, entry.sentinel)}", style=palette.muted)
-            elif b is None:
-                block.append("  usage unknown", style=palette.muted)
+            elif b is None:  # no reading recent enough to decide on; an older one is named rather than shown as current
+                seen = f" (last reading {output.format_age(entry.fetched_at, now)})" if entry.fetched_at is not None else ""
+                block.append(f"  usage unknown{seen}", style=palette.muted)
             else:
                 block.append(f"  {b.label} {b.pct:.0f}% used (line {autoswitch.pct_label(b.line)}%)", style=palette.severity(b.pct))
                 for label, pct, suffix, _weekly in window_rows(entry, now):
