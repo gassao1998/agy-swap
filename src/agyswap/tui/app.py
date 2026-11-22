@@ -406,7 +406,7 @@ class AgyswapApp(App):
         msg = f"{group} failed: {event.worker.error}"
         if group == "action" or self._last_error.get(group) != msg:  # a lane failing the same way every tick says so once
             self._last_error[group] = msg
-            self.notify(msg, severity="error" if group == "action" else "warning", timeout=6)
+            self.notify(msg, severity="error" if group == "action" else "warning", timeout=6, markup=False)
 
     def action_refresh_full(self) -> None:
         self.source.forget_live()  # an explicit refresh reads Credential Manager again too
@@ -432,13 +432,13 @@ class AgyswapApp(App):
         payload = result.payload or {}
         if not result.ok:
             self.push_screen(OutputModal(f"{label} failed", result.text))
-        elif "switched" in payload:
+        elif "switched" in payload:  # these texts come from errors, paths and agy, so brackets in them are not markup
             for w in payload.get("warnings") or []:
-                self.notify(w, severity="warning", timeout=8)
+                self.notify(w, severity="warning", timeout=8, markup=False)
             self.notify(payload.get("message", ""), title="Switch",
-                        severity="information" if payload["switched"] else "warning")
+                        severity="information" if payload["switched"] else "warning", markup=False)
         elif result.text:
-            self.notify(result.text.splitlines()[-1])
+            self.notify(result.text.splitlines()[-1], markup=False)
 
     def confirm(self, message: str, title: str, yes: str, then) -> None:
         if any(isinstance(s, ConfirmModal) for s in self.screen_stack):
@@ -512,10 +512,12 @@ class AgyswapApp(App):
         """auto resolves against the probe made before start; the terminal is never probed again mid-session (cswap #177)."""
         self.theme_setting = name
         self.theme = f"agyswap-{self._resolved()}"
+        if name == "auto" and self._detected is None:
+            self.notify("auto follows the terminal background from the next start; dark until then", timeout=6)
         try:
             settings.set_value("ui.theme", name)
         except Exception as e:  # saving is best-effort; the UI keeps the new theme
-            self.notify(f"Could not save the theme: {e}", severity="warning")
+            self.notify(f"Could not save the theme: {e}", severity="warning", markup=False)
 
     def action_toggle_theme(self) -> None:
         order = ("dark", "light", "auto")

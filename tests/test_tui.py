@@ -560,6 +560,16 @@ class PilotTest(Roster, unittest.IsolatedAsyncioTestCase):
             self.assertEqual(app.theme, "agyswap-light")
             await pilot.press("escape")
             self.assertNotIsInstance(app.screen, WatchScreen)
+            with mock.patch.object(app, "notify") as notify:
+                app.apply_theme("auto")  # not probed at this start: dark, and the user is told why
+            self.assertEqual(app.theme, "agyswap-dark")
+            self.assertIn("next start", notify.call_args_list[0].args[0])
+            app.apply_theme("light")
+            with mock.patch.object(self.source, "take", side_effect=AgyswapError(r"C:\data\[red]draft")), \
+                    mock.patch.object(app, "notify") as notify:
+                app.redraw()
+                await self.settle(app, pilot)
+            self.assertIs(notify.call_args.kwargs.get("markup"), False)  # as markup, [red] vanished and the backslash with it
         self.assertEqual(settings.load()["ui.theme"], "light")
 
     async def test_auto_page_shows_settings_and_candidates(self):
