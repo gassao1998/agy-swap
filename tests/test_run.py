@@ -8,7 +8,7 @@ import sys
 import tempfile
 from unittest import mock
 
-from agyswap import accounts, cli, migrate, paths, procs, run, settings, usage
+from agyswap import accounts, cli, migrate, models, paths, procs, run, settings, usage
 from agyswap.errors import AgyswapError, ConfigError
 from agyswap.usage_store import UsageCache
 from tests.helpers import DictStore, TempHome, live, token_blob
@@ -45,9 +45,10 @@ class Base(TempHome):
     def no_fetch(self, env):
         raise AssertionError("usage must not be queried")
 
-    def go(self, ident, args=(), *, cwd=None, fetcher=None, **kw):
+    def go(self, ident, args=(), *, cwd=None, fetcher=None, models_fetcher=None, **kw):
+        # model lists are unknown unless a test gives them: no test may start agy models
         return run.run(ident, list(args), store=self.store, launcher=self.launcher, cwd=str(cwd or self.work),
-                       fetcher=fetcher or self.no_fetch, **kw)
+                       fetcher=fetcher or self.no_fetch, models_fetcher=models_fetcher or (lambda env: None), **kw)
 
     def home_of(self, folder):
         return str(paths.profile_home(folder))
@@ -263,6 +264,137 @@ class AutoTest(Base):
                  self.home_of("work"): usage_text(20)}
         self.go(None, auto=True, fetcher=lambda env: usage.classify(texts[env["USERPROFILE"]]))
         self.assertEqual(self.target(), self.home_of("work"))
+
+
+PERSONAL = ["gemini-4-argon-high", "claude-opus-5-5-high", "claude-sonnet-4-6", "gemini-3.8-flash-high"]
+SCHOOL = ["gemini-3.8-flash-high", "claude-sonnet-4-6", "gpt-oss-120b-medium"]
+OPUS = ["--model", "claude-opus-5-5-high"]
+
+
+class ModelAutoTest(Base):
+    """run --auto with a model named: an account whose model list lacks it is skipped. Lists come from fakes, never from agy."""
+    fetcher = AutoTest.fetcher
+    target = AutoTest.target
+
+    def lists(self, default, school):
+        texts = {self.home_of("default"): default, self.home_of("school"): school}  # always the account folder, even for the active account
+
+        def fetch(env):
+            self.listed.append(env["USERPROFILE"])
+            return texts[env["USERPROFILE"]]
+        return fetch
+
+    def setUp(self):
+        super().setUp()
+        self.listed = []
+
+    def auto(self, args, default_left, school_left, default_models=PERSONAL, school_models=SCHOOL, **kw):
+        return self.go(None, args, auto=True, fetcher=self.fetcher(usage_text(claude_left=default_left, gemini_left=default_left),
+                                                                  usage_text(claude_left=school_left, gemini_left=school_left)),
+                       models_fetcher=self.lists(default_models, school_models), **kw)
+
+    def test_candidate_without_the_model_is_skipped_and_start_runs_anyway(self):
+        self.auto(OPUS, 0, 50)  # the personal quota is gone, but school has no Opus 5.5
+        self.assertEqual(self.target(), self.home_of("default"))
+        err = self.err.getvalue()
+        self.assertIn("Account-2 (school) does not offer claude-opus-5-5-high; skipping it", err)
+        self.assertIn("no account that offers claude-opus-5-5-high has quota left; running Account-1 (default) anyway", err)
+        self.assertNotIn("this run uses", err)
+
+    def test_candidate_with_the_model_is_still_used(self):
+        self.auto(["--model", "claude-sonnet-4-6"], 0, 50)
+        self.assertEqual(self.target(), self.home_of("school"))
+        self.assertNotIn("does not offer", self.err.getvalue())
+
+    def test_start_without_the_model_is_skipped(self):
+        self.auto(["--model", "gpt-oss-120b-medium"], 50, 50, default_models=PERSONAL)
+        self.assertEqual(self.target(), self.home_of("school"))
+        err = self.err.getvalue()
+        self.assertIn("Account-1 (default) does not offer gpt-oss-120b-medium; skipping it", err)
+        self.assertIn("Account-1 (default) does not offer it; this run uses Account-2 (school)", err)
+        self.assertNotIn("quota left", err)
+
+    def test_model_match_is_exact_but_not_case_sensitive(self):
+        self.auto(["--model=CLAUDE-OPUS-5-5-HIGH"], 50, 50)
+        self.assertEqual(self.target(), self.home_of("default"))
+        self.calls.clear()
+        self.auto(["--model", "claude-opus-5-5"], 50, 50)  # a prefix of an id is not an id
+        self.assertEqual(self.target(), self.home_of("default"))
+        self.assertIn("Account-1 (default) does not offer claude-opus-5-5; skipping it", self.err.getvalue())
+
+    def test_unknown_list_never_rules_an_account_out(self):
+        self.go(None, OPUS, auto=True, fetcher=self.fetcher(usage_text(claude_left=0), usage_text(claude_left=40)),
+                models_fetcher=lambda env: None)
+        self.assertEqual(self.target(), self.home_of("school"))
+        self.assertNotIn("does not offer", self.err.getvalue())
+        self.assertEqual(models.ModelCache().get("school"), None)  # a failed fetch is not remembered as "offers nothing"
+        self.calls.clear()
+        self.go(None, OPUS, auto=True, fetcher=self.fetcher(usage_text(claude_left=0), usage_text(claude_left=40)),
+                models_fetcher=lambda env: [])
+        self.assertEqual(self.target(), self.home_of("school"))
+        self.assertIsNone(models.ModelCache().get("default"))
+
+    def test_no_explicit_model_asks_for_no_list(self):
+        def boom(env):
+            raise AssertionError("model lists must not be fetched")
+        for args in ([], ["-p", "q"]):
+            self.calls.clear()
+            self.go(None, args, auto=True, fetcher=self.fetcher(usage_text(40), usage_text(40)), models_fetcher=boom)
+            self.assertEqual(self.target(), self.home_of("default"))
+
+    def test_lists_are_fetched_only_for_accounts_considered_and_cached(self):
+        self.auto(OPUS, 50, 50)
+        self.assertEqual(self.listed, [self.home_of("default")])  # the start account fit, so school was never looked at
+        self.calls.clear()
+        self.auto(OPUS, 50, 50)
+        self.assertEqual(self.listed, [self.home_of("default")])  # served from the cache the second time
+        self.assertEqual(models.ModelCache().get("default"), PERSONAL)
+        self.assertIsNone(models.ModelCache().get("school"))
+
+    def test_skipped_accounts_are_not_asked_either(self):
+        data = accounts.load_sequence()
+        data["accounts"]["2"]["disabled"] = True
+        accounts.save_sequence(data)
+        self.auto(OPUS, 0, 50)
+        self.assertEqual(self.listed, [self.home_of("default")])
+
+
+class ModelListTest(Base):
+    OUT = "claude-opus-5-5-high\tClaude Opus 5.5 (High)\ngpt-oss-120b-medium\tGPT-OSS 120B (Medium)\n"
+
+    def test_parse_takes_ids_from_tab_separated_lines_only(self):
+        text = "Fetching available models...\n" + self.OUT + "Authentication required\nbad id\twith space\n\t\tempty\n"
+        self.assertEqual(models.parse(text), ["claude-opus-5-5-high", "gpt-oss-120b-medium"])
+        self.assertEqual(models.parse(""), [])
+        self.assertEqual(models.parse("Fetching available models...\n"), [])
+
+    def test_fetch_runs_agy_models_and_treats_failures_as_unknown(self):
+        with mock.patch.object(usage, "capture", return_value=("Fetching available models...\n" + self.OUT, False)) as cap:
+            self.assertEqual(models.fetch({"A": "1"}), ["claude-opus-5-5-high", "gpt-oss-120b-medium"])
+        self.assertEqual(cap.call_args.args[:2], ({"A": "1"}, ["models"]))
+        for captured in (None, (self.OUT, True), ("Authentication required\n", False), ("", False)):
+            with mock.patch.object(usage, "capture", return_value=captured):
+                self.assertIsNone(models.fetch({}), captured)
+
+    def test_cache_expires_after_a_day(self):
+        now = [1000.0]
+        cache = models.ModelCache(clock=lambda: now[0])
+        cache.put("default", ["a"])
+        cache.put("school", ["b"])
+        self.assertEqual((cache.get("default"), cache.get("school")), (["a"], ["b"]))
+        now[0] += models.TTL_S - 1
+        self.assertEqual(cache.get("default"), ["a"])
+        now[0] += 2
+        self.assertIsNone(cache.get("default"))
+        paths.models_cache_file().write_text('{"accounts": {"x": {"fetchedAt": 1, "models": 5}, "y": 3}}', encoding="utf-8")
+        self.assertEqual((cache.get("x"), cache.get("y"), cache.get("z")), (None, None, None))
+
+    def test_known_fetches_with_the_account_folder_environment(self):
+        seen = []
+        ids = models.known("school", fetcher=lambda env: seen.append(env) or ["m"])
+        self.assertEqual(ids, ["m"])
+        self.assertEqual((seen[0]["USERPROFILE"], seen[0]["SSH_CLIENT"]), (self.home_of("school"), paths.SSH_ENV["SSH_CLIENT"]))
+        self.assertEqual(models.known("school", fetcher=lambda env: self.fail("cached")), ["m"])
 
 
 class CliRunTest(Base):

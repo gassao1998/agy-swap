@@ -12,7 +12,7 @@ import os
 import subprocess
 import sys
 
-from agyswap import accounts, paths, procs, usage
+from agyswap import accounts, models, paths, procs, usage
 from agyswap.credman import WinCred
 from agyswap.errors import AgyswapError, ConfigError
 from agyswap.fsutil import atomic_write_json, ensure_private_dir, file_lock, read_json
@@ -79,14 +79,25 @@ def class_state(value, model: str | None) -> str:
     return "exhausted" if any(w["pct"] >= 100 for w in limits) else "ok"
 
 
-def pick_auto(ctx: Context, start: str, model: str | None, *, store, fetcher=None) -> str:
+def lacks_model(record: dict, model: str | None, models_fetcher=None) -> bool:
+    """True only when the account's model list is known and has no id equal to model (case-insensitive, as agy matches). Unknown never rules out:
+    no model named, an API key account, no login file, or a list that could not be fetched."""
+    if not model or record.get("kind") == "apikey" or not paths.token_path(record["folder"]).is_file():
+        return False
+    ids = models.known(record["folder"], **({"fetcher": models_fetcher} if models_fetcher else {}))
+    return ids is not None and model.lower() not in {i.lower() for i in ids}
+
+
+def pick_auto(ctx: Context, start: str, model: str | None, *, store, fetcher=None, models_fetcher=None) -> str:
     """Start from start and walk the sequence; the first account whose model class has headroom wins. Usage comes from the shared cache and is
-    queried only when due, one account at a time and only as far as needed. When every account is used up, start runs anyway."""
+    queried only when due, one account at a time and only as far as needed. When the call names a model, an account that does not offer it is
+    skipped (the lists come from agy models, cached). When no account is left, start runs anyway."""
     data = ctx.data
     nums = accounts.numbers(data)
     i = nums.index(start)
     include_keys = bool(ctx.settings.get("autoswitch.includeApiKeyAccounts"))
     kwargs = {"fetcher": fetcher} if fetcher else {}
+    missing = start_lacks = False
     for num in nums[i:] + nums[:i]:
         record = data["accounts"][num]
         if num != start:
@@ -97,12 +108,21 @@ def pick_auto(ctx: Context, start: str, model: str | None, *, store, fetcher=Non
                     continue
             elif skip_reason(data, num) is not None:
                 continue
+        if lacks_model(record, model, models_fetcher):
+            _info(f"{label(data, num)} does not offer {model}; skipping it")
+            missing = True
+            start_lacks = start_lacks or num == start
+            continue
         state = class_state(collect(ctx, [num], **kwargs)[num].decision_value(), model)
         if state in ("ok", "unknown"):
             if num != start:
-                _info(f"{label(data, start)} has no {class_label(model)} quota left; this run uses {label(data, num)}")
+                why = "does not offer it" if start_lacks else f"has no {class_label(model)} quota left"
+                _info(f"{label(data, start)} {why}; this run uses {label(data, num)}")
             return num
-    _warn(f"no account has {class_label(model)} quota left; running {label(data, start)} anyway")
+    if missing:
+        _warn(f"no account that offers {model} has quota left; running {label(data, start)} anyway")
+    else:
+        _warn(f"no account has {class_label(model)} quota left; running {label(data, start)} anyway")
     return start
 
 
@@ -180,7 +200,7 @@ def child_env(store, record: dict, num: str, data: dict) -> dict:
 
 
 def run(identifier: str | None, agy_args: list[str], *, auto: bool = False, require_session: bool = False,
-        share_history: bool | None = None, cwd: str | None = None, store=None, fetcher=None, launcher=None) -> int:
+        share_history: bool | None = None, cwd: str | None = None, store=None, fetcher=None, launcher=None, models_fetcher=None) -> int:
     """Returns agy's exit code. Every notice goes to stderr."""
     store = store or WinCred()
     # Who is active comes from Credential Manager and the roster, never from USERPROFILE or HOME, so a run inside a run terminal resolves the same way (cswap #381, #515, #206)
@@ -189,7 +209,7 @@ def run(identifier: str | None, agy_args: list[str], *, auto: bool = False, requ
     if note:
         _warn(note)
     start = resolve_target(ctx, identifier, cwd or os.getcwd(), quiet=auto)
-    num = pick_auto(ctx, start, usage.model_id(agy_args), store=store, fetcher=fetcher) if auto else start
+    num = pick_auto(ctx, start, usage.model_id(agy_args), store=store, fetcher=fetcher, models_fetcher=models_fetcher) if auto else start
     data = ctx.data
     if require_session and num == ctx.active_number:
         raise ConfigError(f"{label(data, num)} is the active account (the global login); --require-session refuses to run it. "

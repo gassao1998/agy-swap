@@ -178,15 +178,21 @@ class Cancelled(AgyswapError):
 
 
 def fetch(env: dict, agy: Path | None = None, timeout: float = TIMEOUT_S, cancel=None) -> FetchResult:
-    """Run agy -p /usage once. A sign-in URL ends the child process at once instead of waiting out agy's own 60 seconds.
-    cancel() returning True ends it the way Ctrl-C does (a short grace, then the process tree) and raises Cancelled."""
+    captured = capture(env, ["-p", "/usage"], agy, timeout, cancel)
+    return FetchResult(error="spawn") if captured is None else classify(*captured)
+
+
+def capture(env: dict, args: list[str], agy: Path | None = None, timeout: float = TIMEOUT_S, cancel=None) -> tuple[str, bool] | None:
+    """Run agy once with args and return (its output, whether it timed out), or None when it could not be started. A sign-in URL ends the child
+    process at once instead of waiting out agy's own 60 seconds. cancel() returning True ends it the way Ctrl-C does (a short grace, then the
+    process tree) and raises Cancelled."""
     cwd = ensure_data_root()
     try:
-        proc = subprocess.Popen([str(agy or paths.agy_bin()), "-p", "/usage"], env=env, cwd=cwd,
+        proc = subprocess.Popen([str(agy or paths.agy_bin()), *args], env=env, cwd=cwd,
                                 stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                 encoding="utf-8", errors="replace")
     except OSError:
-        return FetchResult(error="spawn")
+        return None
     chunks: list[str] = []
     auth = threading.Event()
 
@@ -222,7 +228,7 @@ def fetch(env: dict, agy: Path | None = None, timeout: float = TIMEOUT_S, cancel
         # Closing the pipe while the reader thread is still stuck in readline fights it for the same lock, so close only after it has finished
         if not reader.is_alive():
             proc.stdout.close()
-    return classify("".join(list(chunks)), timed_out=timed_out)
+    return "".join(list(chunks)), timed_out
 
 
 INTERRUPT_GRACE_S = 5.0

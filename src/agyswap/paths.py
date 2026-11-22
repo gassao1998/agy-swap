@@ -110,6 +110,10 @@ def usage_cache_file() -> Path:
     return base() / "cache" / "usage.json"
 
 
+def models_cache_file() -> Path:
+    return base() / "cache" / "models.json"
+
+
 def migrations_file() -> Path:
     return base() / ".migrations.json"
 
