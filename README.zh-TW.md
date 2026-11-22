@@ -10,7 +10,24 @@ agyswap 讓 Windows 上的 Antigravity CLI（`agy`）同時記住幾個 Google �
 
 Alpha 版（1.0.0a1），只支援 Windows。切換的程式有離線測試把關，測試碰不到真的認證管理員。全域切換也在真的認證管理員上跑過。
 
-Antigravity App 會不會跟著切換換帳號，目前沒人測過。`add-token` 把 Gemini API key 當成 `GEMINI_API_KEY` 交給 `agy`，`agy` 認不認這個變數也還不知道。
+Antigravity App 會不會跟著切換換帳號，目前沒人測過。`add-token` 把 Gemini API key 當成 `GEMINI_API_KEY` 交給 `agy`，`agy` 認不認這個變數也還不知道；論壇有回覆說還要把 `modelProvider` 設成 `gemini`，這點也沒實測過。
+
+## Google 的條款
+
+用之前請先讀這節。Antigravity 的官方 FAQ 寫：「Antigravity CLI headless mode (agy -p) is intended for direct scripting and CI workflows. Wrapping agy inside third-party coding agents or applications, or automating account rotation, is not supported under consumer plans.」（[FAQ](https://antigravity.google/docs/faq)）意思是 `agy -p` 只給直接寫腳本與 CI 用；把 agy 包進第三方 coding agent 或應用程式，或自動輪替帳號，消費者方案都不支援。Antigravity 的附加條款另外寫明，用第三方軟體、工具或服務存取服務屬於違約，「may be grounds for suspension or termination of your Antigravity and/or Gemini CLI accounts」（[條款](https://antigravity.google/terms)），也就是可能停掉你的 Antigravity 或 Gemini CLI 帳號。
+
+agyswap 碰到的地方：
+
+- `auto`、`run --auto` 就是自動輪替帳號。
+- `run` 照字面就是包住 agy 的第三方程式，被其他 coding agent 呼叫也算。
+- agyswap 會讀 agy 快取的 OAuth 登入：核對 `id_token_email`、在帳號資料夾存一份，再交回官方的 agy，自己不連 Google 的伺服器。Google 人員 9 月在論壇回答，腳本呼叫未經修改的 agy 可以，但不能擷取、轉交或重複使用它快取的憑證（[論壇](https://discuss.ai.google.dev/t/185992)）；agyswap 確實會讀取、搬動這些憑證。11 月的一則回覆則說，別家的 coding agent 啟動 `agy -p`，個人方案不支援（[論壇](https://discuss.ai.google.dev/t/201688)）。
+- 自己擁有、自己付費的帳號手動切換：7 月 Google 人員的回答說不算違反（[論壇](https://discuss.ai.google.dev/t/174378)），10 月另一則回覆也說可以（[論壇](https://discuss.ai.google.dev/t/190436)）。
+
+真的有人被停過。2026 年 2 月那一波之後，Google 開了申訴表單，第一次可以解除，再犯就永久停用（[論壇](https://discuss.ai.google.dev/t/131424)）。Google 的服務條款也保留權利，嚴重或重複違反服務專屬條款時，可以停止你使用服務，或刪除整個 Google 帳號（[條款](https://policies.google.com/terms)）。
+
+官方支援的腳本用法是改用 API key 登入（11 月那則回覆說要把 `modelProvider` 設成 `gemini`，再設 `GEMINI_API_KEY`），或改用 Google Cloud 的 Pay As You Go。agyswap 的 `add-token` 只設 `GEMINI_API_KEY`，這些都還沒在這裡實測過。
+
+agyswap 改變不了 Google 允許什麼。要用的話，風險由你自己的帳號承擔。
 
 ## 需要
 

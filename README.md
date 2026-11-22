@@ -10,7 +10,24 @@ The commands, flags, `--json` fields and settings keys follow [claude-swap](http
 
 Alpha (1.0.0a1), Windows only. The switching code is covered by offline tests that never touch the real Credential Manager. Global switches have also been run against the real one.
 
-Two things are still unverified. Nobody has checked whether the Antigravity App picks up a switch. `add-token` passes a Gemini API key to `agy` as `GEMINI_API_KEY`, and it is not known yet whether `agy` honours it.
+Two things are still unverified. Nobody has checked whether the Antigravity App picks up a switch. `add-token` passes a Gemini API key to `agy` as `GEMINI_API_KEY`, and it is not known yet whether `agy` honours it; a forum reply says agy also needs `modelProvider` set to `gemini`, which hasn't been tested either.
+
+## Google's terms
+
+Read this before you use agyswap. Google's Antigravity FAQ says: "Antigravity CLI headless mode (agy -p) is intended for direct scripting and CI workflows. Wrapping agy inside third-party coding agents or applications, or automating account rotation, is not supported under consumer plans." ([FAQ](https://antigravity.google/docs/faq)) The Antigravity terms add that using third-party software, tools or services to access the service is a breach, which "may be grounds for suspension or termination of your Antigravity and/or Gemini CLI accounts." ([terms](https://antigravity.google/terms))
+
+Where agyswap stands:
+
+- `auto` and `run --auto` automate account rotation.
+- `run` wraps agy by definition, and so does any coding agent that calls agyswap.
+- agyswap reads the OAuth login that agy caches, checks its `id_token_email`, keeps a copy in the account folder and hands it back to the official agy. It never calls Google's servers itself. A Google staff answer from September allows scripts to call the unmodified agy, but rules out extracting, proxying or reusing its cached credentials ([forum](https://discuss.ai.google.dev/t/185992)), and agyswap does read and move them. A reply from November says another vendor's coding agent launching `agy -p` is not supported under a personal plan ([forum](https://discuss.ai.google.dev/t/201688)).
+- Switching by hand between accounts you own and pay for was called fine in a July staff answer ([forum](https://discuss.ai.google.dev/t/174378)) and in an October reply ([forum](https://discuss.ai.google.dev/t/190436)).
+
+Accounts have been banned before. After the February 2026 wave, Google added a form that lifts a first ban; a second violation means a permanent ban ([forum](https://discuss.ai.google.dev/t/131424)). Google's general terms also allow it to suspend your access or delete your Google Account if you materially or repeatedly breach service-specific terms ([terms](https://policies.google.com/terms)).
+
+The supported route for scripted use is an API key (the November reply says to set `modelProvider` to `gemini` together with `GEMINI_API_KEY`) or Pay As You Go on Google Cloud. agyswap's `add-token` only sets `GEMINI_API_KEY`, and none of this has been tested here.
+
+agyswap doesn't change what Google allows. If you use it, the risk falls on your own accounts.
 
 ## Requirements
 
