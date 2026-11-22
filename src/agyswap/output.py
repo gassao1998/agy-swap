@@ -213,8 +213,7 @@ def usage_lines(usage: dict, fetched_at: float | None, now: float | None = None)
     return [f"{mark} {text}" if mark else text for mark, text in usage_rows(usage, fetched_at, now)]
 
 
-VIA_FOLDER_NOTE = ("Credential Manager cannot be read here (for example over SSH): usage was read through the account folder copy, "
-                   "and the global login was not checked")
+VIA_FOLDER_NOTE = "read from the account folder; the global login was not checked"  # the reason is in the warning above the list
 
 
 def entry_lines(entry: Entry, now: float) -> list[str]:

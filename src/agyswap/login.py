@@ -74,6 +74,7 @@ class LiveLogin:
 
     cred: Credential | None = None
     error: str | None = None
+    code: int | None = None  # the Windows error code when the read failed, for example 1312 in an SSH logon session
 
     @property
     def present(self) -> bool:
@@ -92,4 +93,4 @@ def read_live_login(store: WinCred | None = None) -> LiveLogin:
     try:
         return LiveLogin(cred=(store or WinCred()).read(paths.KEYRING_TARGET))
     except (CredentialError, OSError) as e:
-        return LiveLogin(error=str(e))
+        return LiveLogin(error=str(e), code=getattr(e, "code", None) if isinstance(e, CredentialError) else None)

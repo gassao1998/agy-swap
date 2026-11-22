@@ -105,11 +105,18 @@ class ListStatusTest(TempHome):
         """Over SSH Credential Manager cannot be read: the active account is queried through its folder like run, nothing is written, and the row says so."""
         before = paths.token_path("default").read_bytes()
         fake = FakeAgy({"default": FetchResult(usage=parse_usage(PRO)), "school": FetchResult(usage=parse_usage(FREE))})
-        out = io.StringIO()
-        with contextlib.redirect_stdout(out):
-            payload = commands.cmd_list(self.ctx(live(error="error code 1312")), json_output=True, fetcher=fake)
-            status = commands.cmd_status(self.ctx(live(error="error code 1312")), json_output=True, fetcher=fake)
-            commands.cmd_list(self.ctx(live(error="error code 1312")), fetcher=fake)
+        out, err = io.StringIO(), io.StringIO()
+        ssh = live(error="CredReadW failed for gemini:antigravity, error code 1312", code=1312)
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            payload = commands.cmd_list(self.ctx(ssh), json_output=True, fetcher=fake)
+            status = commands.cmd_status(self.ctx(ssh), json_output=True, fetcher=fake)
+            commands.cmd_list(self.ctx(ssh), fetcher=fake)
+        self.assertIn("not available in this logon session", err.getvalue())
+        self.assertNotIn("error code 1312", err.getvalue())  # the plain explanation replaces the raw API error
+        other = io.StringIO()
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(other):
+            commands.cmd_list(self.ctx(live(error="CredReadW failed for gemini:antigravity, error code 5", code=5)), fetcher=fake)
+        self.assertIn("Cannot read Credential Manager (CredReadW failed", other.getvalue())
         one, two = payload["accounts"]
         self.assertEqual((one["active"], one["usageStatus"], one["globalLoginUnchecked"]), (True, "ok", True))
         self.assertEqual(one["usage"]["sevenDay"]["pct"], parse_usage(PRO)["seven_day"]["pct"])

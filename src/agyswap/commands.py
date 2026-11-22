@@ -16,6 +16,7 @@ from agyswap.state import UNKNOWN_EMAIL, Context, collect, sync_active_login
 from agyswap.usage_store import Entry
 
 LOCKSTEP_TOLERANCE_S = 5.0
+NO_LOGON_SESSION = 1312  # ERROR_NO_SUCH_LOGON_SESSION: CredReadW in a logon session without credentials, such as SSH with a key
 
 
 def _local(epoch: float | None) -> str:
@@ -140,7 +141,10 @@ def _prepare(ctx: Context) -> None:
 
 
 def _common_warnings(ctx: Context) -> None:
-    if ctx.live.error:
+    if ctx.live.error and ctx.live.code == NO_LOGON_SESSION:
+        warning("agyswap: Credential Manager is not available in this logon session (an SSH login, for example); "
+                "the active account's usage comes from its account folder", file=sys.stderr)
+    elif ctx.live.error:
         warning(f"agyswap: Cannot read Credential Manager ({ctx.live.error})", file=sys.stderr)
     elif ctx.foreign:
         warning(f"agyswap: Credential Manager holds the login of Account-{ctx.live_owner}, not Account-{ctx.active_number} as recorded "

@@ -23,9 +23,9 @@ def token_blob(email: str, secret: str = SECRET, expiry: str | None = None) -> b
     return json.dumps({"auth_method": "oauth", "id_token_email": email, "token": token}).encode("utf-8")
 
 
-def live(email: str | None = None, blob: bytes | None = None, error: str | None = None) -> LiveLogin:
+def live(email: str | None = None, blob: bytes | None = None, error: str | None = None, code: int | None = None) -> LiveLogin:
     if error:
-        return LiveLogin(error=error)
+        return LiveLogin(error=error, code=code)
     if email is None and blob is None:
         return LiveLogin()
     return LiveLogin(cred=Credential(target=paths.KEYRING_TARGET, blob=blob or token_blob(email),
