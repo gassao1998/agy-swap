@@ -1,0 +1,314 @@
+"""The dashboard: cache-only redraws and the query pace (cswap #496), --no-mouse (cswap #390), the auto page (cswap #219, #587), theme detection (cswap #177),
+the CLI wiring, and the screens through textual's headless Pilot. The Pilot tests skip when textual is not installed."""
+import contextlib
+import importlib.util
+import io
+import unittest
+from unittest import mock
+
+from agyswap import accounts, autoswitch, cli, settings
+from agyswap.errors import AgyswapError
+from agyswap.tui import appearance
+from agyswap.tui.data import SnapshotSource, run_action
+from agyswap.usage import FetchResult, parse_usage
+from agyswap.usage_store import UsageCache
+from tests.helpers import TempHome, live
+from tests.test_usage import FREE
+
+HAS_TEXTUAL = importlib.util.find_spec("textual") is not None
+
+
+class Counter:
+    def __init__(self, result):
+        self.calls, self.result = 0, result
+
+    def __call__(self, *_args):
+        self.calls += 1
+        return self.result
+
+
+class Clock:
+    def __init__(self, t=1_800_000_000.0):
+        self.t = t
+
+    def __call__(self):
+        return self.t
+
+
+class Roster(TempHome):
+    def setUp(self):
+        super().setUp()
+        self.write_token("default", "me@gmail.com")
+        self.write_token("school", "me@school.edu")
+        accounts.save_sequence({"activeAccountNumber": 1, "accounts": {
+            "1": {"email": "me@gmail.com", "alias": "default", "folder": "default"},
+            "2": {"email": "me@school.edu", "alias": "school", "folder": "school"}}})
+        self.read_live = Counter(live("me@gmail.com"))
+        self.agy = Counter(FetchResult(usage=parse_usage(FREE)))
+
+
+class SnapshotSourceTest(Roster):
+    def test_ten_redraws_read_the_cache_only(self):
+        """cswap #496: ten redraws three seconds apart make one Credential Manager read and start agy zero times."""
+        clock = Clock()
+        source = SnapshotSource(read_live=self.read_live, fetcher=self.agy, clock=clock)
+        for _ in range(10):
+            snap = source.take()
+            clock.t += 3
+        self.assertEqual((self.read_live.calls, self.agy.calls), (1, 0))
+        self.assertEqual(snap.ctx.active_number, "1")
+        self.assertEqual(snap.numbers, ["1", "2"])
+        clock.t += 60
+        source.take()
+        self.assertEqual(self.read_live.calls, 2)
+
+    def test_a_failed_read_waits_too(self):
+        clock, failing = Clock(), Counter(live(error="CredReadW failed, error code 5"))
+        source = SnapshotSource(read_live=failing, fetcher=self.agy, clock=clock)
+        for _ in range(10):
+            source.take()
+            clock.t += 5
+        self.assertEqual(failing.calls, 1)
+
+    def test_refresh_follows_the_cache_plan(self):
+        clock = Clock()
+        source = SnapshotSource(read_live=self.read_live, fetcher=self.agy, clock=clock)
+        source.refresh()
+        self.assertEqual(self.agy.calls, 2)  # nothing cached yet: both accounts once
+        for _ in range(10):
+            clock.t += 3
+            source.refresh()
+        self.assertEqual(self.agy.calls, 2)
+        clock.t += 300  # the active account's 300-second plan is due, the candidate's 600 is not
+        source.refresh()
+        self.assertEqual(self.agy.calls, 3)
+        source.refresh(full=True)
+        self.assertEqual(self.agy.calls, 5)
+        self.assertIsNotNone(UsageCache(clock=clock).entry("school").fetched_at)
+
+    def test_forget_live_reads_again(self):
+        source = SnapshotSource(read_live=self.read_live, fetcher=self.agy, clock=Clock())
+        source.take()
+        source.forget_live()
+        source.take()
+        self.assertEqual(self.read_live.calls, 2)
+
+
+class RunActionTest(unittest.TestCase):
+    def test_results(self):
+        self.assertEqual(run_action(lambda: {"switched": True}).payload, {"switched": True})
+        self.assertEqual(run_action(lambda: [("ok", "a"), ("dim", "b")]).text, "a\nb")
+
+        def boom():
+            print("before")
+            raise AgyswapError("nope")
+        result = run_action(boom)
+        self.assertFalse(result.ok)
+        self.assertEqual(result.text, "before\nError: nope")
+        self.assertFalse(run_action(lambda: input("prompt? ")).ok)  # an unexpected prompt reads EOF, never blocks
+
+
+class AppearanceTest(unittest.TestCase):
+    def test_classify(self):
+        self.assertEqual(appearance.classify("\x1b]11;rgb:0000/0000/0000\x1b\\"), "dark")
+        self.assertEqual(appearance.classify("\x1b]11;rgb:ffff/ffff/ffff\x07\x1b[?61;6c"), "light")
+        self.assertEqual(appearance.classify("\x1b]11;#fafafa\x07"), "light")
+        self.assertIsNone(appearance.classify("\x1b[?61;6c"))
+        self.assertIsNone(appearance.classify("]11;rgb:ffff/ffff/ffff\x07"))  # no ESC: echoed input, not a reply
+
+    def test_read_reply_stops_at_da1_or_the_timeout(self):
+        chars = iter("\x1b]11;rgb:ffff/ffff/ffff\x07\x1b[?61;6cLEFTOVER")
+        self.assertTrue(appearance.read_reply(lambda: next(chars)).endswith("c"))
+        clock = Clock(0.0)
+
+        def nothing():
+            clock.t += 0.5
+            return None
+        with mock.patch("agyswap.tui.appearance.time.sleep"):
+            self.assertEqual(appearance.read_reply(nothing, timeout=1.0, clock=clock), "")
+
+    def test_resolve_theme(self):
+        """cswap #177: no reply, or a failing probe, gives dark; an explicit setting never probes."""
+        probe = Counter(None)
+        self.assertEqual(appearance.resolve_theme("light", probe), "light")
+        self.assertEqual(probe.calls, 0)
+        self.assertEqual(appearance.resolve_theme("auto", probe), "dark")
+        self.assertEqual(appearance.resolve_theme("auto", lambda: "\x1b]11;#ffffff\x07"), "light")
+        self.assertEqual(appearance.resolve_theme("auto", mock.Mock(side_effect=OSError)), "dark")
+
+    def test_no_console_no_probe(self):
+        with mock.patch("sys.stdin", io.StringIO()), mock.patch("sys.stdout", io.StringIO()) as out:
+            self.assertIsNone(appearance._console_query())
+        self.assertEqual(out.getvalue(), "")
+
+
+def run_cli(argv):
+    out, err = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        try:
+            code = cli.dispatch(argv)
+        except SystemExit as e:
+            code = e.code
+    return code, err.getvalue()
+
+
+class CliTest(TempHome):
+    def test_without_textual(self):
+        with mock.patch("agyswap.tui.available", return_value=False):
+            for argv in (["tui"], ["watch"], ["--watch"]):
+                code, err = run_cli(argv)
+                self.assertEqual(code, 1)
+                self.assertIn("textual", err)
+
+    def test_dispatch(self):
+        with mock.patch("agyswap.tui.available", return_value=True), mock.patch("agyswap.tui.run", return_value=0) as run:
+            self.assertEqual(run_cli(["tui", "--no-mouse"])[0], 0)
+            self.assertEqual(run_cli(["watch"])[0], 0)
+        self.assertEqual(run.call_args_list, [mock.call("dashboard", no_mouse=True), mock.call("watch", no_mouse=False)])
+        code, err = run_cli(["list", "--no-mouse"])
+        self.assertEqual(code, 2)
+        self.assertIn("--no-mouse can only be used with", err)
+
+    def test_bare_command(self):
+        """A bare agyswap opens the dashboard only in a terminal with textual installed; otherwise the usage error stays."""
+        tty = mock.Mock(isatty=lambda: True)
+        for has, expected in ((True, 0), (False, 2)):
+            with mock.patch("agyswap.tui.available", return_value=has), mock.patch("agyswap.tui.run", return_value=0) as run, \
+                    mock.patch("sys.stdin", tty), mock.patch("sys.stdout", tty), contextlib.redirect_stderr(io.StringIO()):
+                try:
+                    code = cli.dispatch([])
+                except SystemExit as e:
+                    code = e.code
+            self.assertEqual((code, run.called), (expected, has))
+        with mock.patch("agyswap.tui.run") as run:
+            self.assertEqual(run_cli([])[0], 2)  # not a terminal
+        run.assert_not_called()
+
+
+@unittest.skipUnless(HAS_TEXTUAL, "textual is not installed (the tui extra)")
+class PilotTest(Roster, unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        super().setUp()
+        UsageCache().record_success("school", parse_usage(FREE), 600.0)
+
+    async def asyncSetUp(self):
+        import asyncio
+
+        asyncio.get_running_loop().set_debug(False)  # the test case turns asyncio debug on, which reports every slow textual step
+
+    def app(self, **kwargs):
+        from agyswap.tui.app import AgyswapApp
+
+        self.source = SnapshotSource(read_live=self.read_live, fetcher=self.agy)
+        return AgyswapApp(source=self.source, theme_setting="dark", **kwargs)
+
+    async def settle(self, app, pilot):
+        for _ in range(3):
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+
+    async def test_dashboard_redraws_within_the_limits(self):
+        """Same as above (cswap #496), through the app: ten ticks make one Credential Manager read and query only the account the cache plan has due."""
+        app = self.app()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await self.settle(app, pilot)
+            for _ in range(10):
+                app._tick()
+                await self.settle(app, pilot)
+            panel = str(app.screen.query_one("#accounts-panel").render())
+            self.assertIn("me@gmail.com", panel)
+            self.assertIn("● active", panel)
+            self.assertIn("school", panel)
+        self.assertEqual(self.read_live.calls, 1)
+        self.assertEqual(self.agy.calls, 1)  # the active account had no reading; school's 600-second plan is not due
+
+    async def test_switch_asks_first(self):
+        from agyswap.tui.screens import SwitchScreen
+
+        with mock.patch("agyswap.switch.switch_to", return_value={"switched": True, "message": "ok", "warnings": []}) as switch_to:
+            app = self.app()
+            async with app.run_test(size=(120, 40)) as pilot:
+                await self.settle(app, pilot)
+                await pilot.press("s")
+                await self.settle(app, pilot)
+                self.assertIsInstance(app.screen, SwitchScreen)
+                await pilot.press("down", "enter")
+                await pilot.press("n")
+                await self.settle(app, pilot)
+                switch_to.assert_not_called()
+                await pilot.press("s", "down", "enter", "y")
+                await self.settle(app, pilot)
+        switch_to.assert_called_once_with("2")
+        self.assertEqual(self.read_live.calls, 2)  # read again after the switch
+
+    async def test_watch_page_and_theme(self):
+        from agyswap.tui.screens import WatchScreen
+
+        app = self.app(start="watch")
+        async with app.run_test(size=(120, 40)) as pilot:
+            await self.settle(app, pilot)
+            self.assertIsInstance(app.screen, WatchScreen)
+            self.assertEqual(len(app.screen.query("AccountCard")), 2)
+            await pilot.press("ctrl+t")
+            self.assertEqual(app.theme, "agyswap-light")
+            await pilot.press("escape")
+            self.assertNotIsInstance(app.screen, WatchScreen)
+        self.assertEqual(settings.load()["ui.theme"], "light")
+
+    async def test_auto_page_shows_settings_and_candidates(self):
+        """cswap #219, #587: strategy, threshold, model categories, and each candidate's windows with reset times; the engine starts in dry-run."""
+        settings.set_value("autoswitch.strategy", "weekly-first")
+        settings.set_value("autoswitch.model", "claude")
+        engines = []
+
+        class FakeEngine:
+            def __init__(self, cfg, on_event, *, dry_run=False, fetcher=None):
+                self.cfg, self.on_event, self.dry_run, self.stopped = cfg, on_event, dry_run, False
+                engines.append(self)
+
+            def run_loop(self):
+                self.on_event(autoswitch.event("no-switch", reason="below-threshold"))
+                return 0
+
+            def stop(self):
+                self.stopped = True
+
+        with mock.patch("agyswap.autoswitch.Engine", FakeEngine):
+            app = self.app()
+            async with app.run_test(size=(140, 50)) as pilot:
+                await self.settle(app, pilot)
+                await pilot.press("g")
+                await self.settle(app, pilot)
+                self.assertTrue(app.store_only)
+                summary = str(app.screen.query_one("#auto-summary").render())
+                for part in ("strategy weekly-first", "threshold 90%", "models claude"):
+                    self.assertIn(part, summary)
+                candidates = str(app.screen.query_one("#candidates").render())
+                self.assertIn("school", candidates)
+                self.assertIn("Claude and GPT models 7d", candidates)
+                self.assertIn("resets", candidates)
+                await pilot.press("t", "right", "right", "enter")
+                await self.settle(app, pilot)
+                self.assertIn("threshold 92%", str(app.screen.query_one("#auto-summary").render()))
+                await pilot.press("l", "n")  # going live is refused at the prompt
+                await pilot.press("escape")
+                await self.settle(app, pilot)
+                self.assertFalse(app.store_only)
+        self.assertTrue(all(e.dry_run for e in engines))
+        self.assertEqual(len(engines), 2)  # restarted once for the new session threshold
+        self.assertTrue(engines[-1].stopped)
+        self.assertEqual(settings.load()["autoswitch.threshold"], 90.0)  # the session threshold is never saved
+
+    def test_no_mouse(self):
+        """cswap #390: --no-mouse leaves mouse tracking off."""
+        from agyswap import tui
+        from agyswap.tui.app import AgyswapApp
+
+        with mock.patch.object(AgyswapApp, "run") as run, mock.patch("agyswap.tui.appearance._console_query", return_value=None):
+            tui.run(no_mouse=True)
+            tui.run()
+        self.assertEqual([c.kwargs for c in run.call_args_list], [{"mouse": False}, {"mouse": True}])
+
+
+if __name__ == "__main__":
+    unittest.main()

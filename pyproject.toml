@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agyswap"
+version = "1.0.0a1"
+description = "Multi-account switcher for the Antigravity CLI (agy) on Windows, with cswap's command set"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md"]
+authors = [{ name = "gassao1998" }]
+requires-python = ">=3.11"
+dependencies = []
+keywords = ["antigravity", "agy", "gemini", "cli", "account switcher", "windows"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Utilities",
+]
+
+[project.urls]
+Homepage = "https://github.com/gassao1998/agy-swap"
+Issues = "https://github.com/gassao1998/agy-swap/issues"
+Changelog = "https://github.com/gassao1998/agy-swap/blob/main/CHANGELOG.md"
+
+[project.optional-dependencies]
+tui = ["textual>=8.2.8,<9"]
+
+[project.scripts]
+agyswap = "agyswap.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

@@ -1,0 +1,3 @@
+# Hook scripts are run by sh; a CRLF shebang line breaks them on checkout with autocrlf.
+.githooks/pre-push text eol=lf
+.githooks/commit-msg text eol=lf

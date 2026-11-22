@@ -1,0 +1,9 @@
+#!/bin/sh
+# Reject non-English commit messages early, then run the user's global commit-msg hook if one is set,
+# because pointing core.hooksPath at this folder replaces the global hooks folder.
+python -X utf8 "$(dirname "$0")/check_english.py" msg "$1" || exit 1
+global_dir="$(git config --global --get core.hooksPath)"
+if [ -n "$global_dir" ] && [ -x "$global_dir/commit-msg" ] && \
+   [ "$(cd "$global_dir" && pwd -P)" != "$(cd "$(dirname "$0")" && pwd -P)" ]; then
+  exec "$global_dir/commit-msg" "$1"
+fi

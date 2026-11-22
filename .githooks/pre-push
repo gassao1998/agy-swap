@@ -1,0 +1,5 @@
+#!/bin/sh
+# Block pushes with non-English commit messages, non-English text added to English-only files,
+# or a README.md / README.zh-TW.md pair that changed out of sync. Enable with:
+#   git config core.hooksPath .githooks
+exec python -X utf8 "$(dirname "$0")/check_english.py" push
