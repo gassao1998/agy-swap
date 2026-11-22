@@ -235,6 +235,9 @@ class ImportTest(Base):
         self.assertEqual(run(["export", str(self.out), "--include-settings"])[0], 2)
 
     def test_a_kept_newer_login_leaves_the_record_and_folder_alone(self):
+        # every roster save stamps lastUpdated to the second, so freeze the stamp or the byte comparison below flakes on a second boundary
+        self.enterContext(mock.patch("agyswap.accounts.timestamp", return_value="2026-11-22T00:00:00Z"))
+        accounts.save_sequence(accounts.load_sequence())
         transfer.settings_path("school").write_text('{"theme": "dark"}', encoding="utf-8")
         env = self.exported()
         transfer.settings_path("school").unlink()
