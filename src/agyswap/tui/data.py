@@ -52,20 +52,37 @@ class SnapshotSource:
         self.clock = clock
         self._live: LiveLogin | None = None
         self._live_at = 0.0
+        self._gen = 0
         self._lock = threading.Lock()
+        self.closing = threading.Event()  # the app is closing: no agy starts, and the one running is ended
 
     def live(self) -> LiveLogin:
-        """cswap #496: one Credential Manager read per LIVE_TTL_S, a failed one included."""
+        """cswap #496: one Credential Manager read per LIVE_TTL_S, a failed one included. The lock only orders the readers."""
         with self._lock:
-            now = self.clock()
-            if self._live is None or not 0 <= now - self._live_at < LIVE_TTL_S:
-                self._live, self._live_at = self.read_live(), now
-            return self._live
+            now, gen, cached, at = self.clock(), self._gen, self._live, self._live_at
+            if cached is not None and 0 <= now - at < LIVE_TTL_S:
+                return cached
+            login = self.read_live()
+            if gen == self._gen:  # after a forget_live meanwhile, this read may predate the switch: do not keep it
+                self._live, self._live_at = login, now
+            return login
 
     def forget_live(self) -> None:
-        """After a switch the remembered login is wrong: the next redraw reads Credential Manager again."""
-        with self._lock:
-            self._live = None
+        """After a switch the remembered login is wrong: the next redraw reads Credential Manager again. It runs on the UI thread,
+        so it never waits for a read in progress."""
+        self._live = None
+        self._gen += 1
+
+    def fetcher_for(self, stopped=None):
+        """agy for the dashboard: none starts once the app is closing or stopped() is true, and the one running is ended."""
+        def cancelled() -> bool:
+            return self.closing.is_set() or (stopped is not None and stopped())
+
+        def run(env):
+            if cancelled():
+                raise usage.Cancelled("the usage query was cancelled")
+            return self.fetcher(env, cancel=cancelled)
+        return run
 
     def _context(self) -> Context:
         return load_context(read_live=self.live, quiet=True)
@@ -77,16 +94,18 @@ class SnapshotSource:
         cache = UsageCache(clock=self.clock)
         return Snapshot(ctx, collect(ctx, nums, cache=cache, query=False), self.clock())
 
-    def refresh(self, *, full: bool = False) -> None:
-        """Start agy, one account at a time, for the accounts due on the cache plan (with full, every account not in backoff)."""
+    def refresh(self, *, full: bool = False, stopped=None) -> bool:
+        """Start agy, one account at a time, for the accounts due on the cache plan (with full, every account not in backoff).
+        Returns whether any account was due; raises usage.Cancelled when closing or stopped() ends it early."""
         ctx = self._context()
         if not ctx.data:
-            return
+            return False
         cache, now = UsageCache(clock=self.clock), self.clock()
         nums = accounts.numbers(ctx.data)
         plan = {n for n in nums if full or due(cache.entry(ctx.data["accounts"][n].get("folder") or n), now)}
         if plan:
-            collect(ctx, nums, fetcher=self.fetcher, cache=cache, fetch=plan)
+            collect(ctx, nums, fetcher=self.fetcher_for(stopped), cache=cache, fetch=plan)
+        return bool(plan)
 
 
 @dataclass

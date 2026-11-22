@@ -3,10 +3,12 @@ the CLI wiring, and the screens through textual's headless Pilot. The Pilot test
 import contextlib
 import importlib.util
 import io
+import threading
+import time
 import unittest
 from unittest import mock
 
-from agyswap import accounts, autoswitch, cli, settings
+from agyswap import accounts, autoswitch, cli, settings, usage
 from agyswap.errors import AgyswapError
 from agyswap.tui import appearance
 from agyswap.tui.data import SnapshotSource, run_action
@@ -22,7 +24,7 @@ class Counter:
     def __init__(self, result):
         self.calls, self.result = 0, result
 
-    def __call__(self, *_args):
+    def __call__(self, *_args, **_kwargs):
         self.calls += 1
         return self.result
 
@@ -73,11 +75,11 @@ class SnapshotSourceTest(Roster):
     def test_refresh_follows_the_cache_plan(self):
         clock = Clock()
         source = SnapshotSource(read_live=self.read_live, fetcher=self.agy, clock=clock)
-        source.refresh()
+        self.assertTrue(source.refresh())
         self.assertEqual(self.agy.calls, 2)  # nothing cached yet: both accounts once
         for _ in range(10):
             clock.t += 3
-            source.refresh()
+            self.assertFalse(source.refresh())  # nothing due: the app skips the extra redraw
         self.assertEqual(self.agy.calls, 2)
         clock.t += 300  # the active account's 300-second plan is due, the candidate's 600 is not
         source.refresh()
@@ -92,6 +94,44 @@ class SnapshotSourceTest(Roster):
         source.forget_live()
         source.take()
         self.assertEqual(self.read_live.calls, 2)
+
+    def test_forget_live_never_waits_for_a_read(self):
+        """forget_live runs on the UI thread: a Credential Manager read in progress must not block it, and that read is not kept."""
+        reading, release = threading.Event(), threading.Event()
+
+        def slow_read():
+            reading.set()
+            release.wait(5)
+            return live("me@gmail.com")
+        source = SnapshotSource(read_live=slow_read, fetcher=self.agy, clock=Clock())
+        reader = threading.Thread(target=source.live)
+        reader.start()
+        self.assertTrue(reading.wait(5))
+        forget = threading.Thread(target=source.forget_live)
+        forget.start()
+        forget.join(1)
+        blocked = forget.is_alive()
+        release.set()
+        reader.join(5)
+        forget.join(5)
+        self.assertFalse(blocked)
+        self.assertIsNone(source._live)  # the read that overlapped forget_live may predate a switch
+
+    def test_closing_cancels_queries(self):
+        """Once the app is closing no agy starts, the running one is told to stop, and nothing is recorded for the account."""
+        seen = []
+
+        def agy(env, cancel):
+            seen.append(cancel())
+            source.closing.set()
+            raise usage.Cancelled("cancelled")  # what usage.fetch raises once cancel() turns true
+        source = SnapshotSource(read_live=self.read_live, fetcher=agy, clock=Clock())
+        with self.assertRaises(usage.Cancelled):
+            source.refresh(full=True)
+        self.assertEqual(seen, [False])  # the second account never started
+        self.assertIsNone(UsageCache(clock=Clock()).entry("default").fetched_at)
+        with self.assertRaises(usage.Cancelled):
+            source.fetcher_for()({})
 
 
 class RunActionTest(unittest.TestCase):
@@ -221,6 +261,40 @@ class PilotTest(Roster, unittest.IsolatedAsyncioTestCase):
             self.assertIn("school", panel)
         self.assertEqual(self.read_live.calls, 1)
         self.assertEqual(self.agy.calls, 1)  # the active account had no reading; school's 600-second plan is not due
+
+    async def test_quitting_ends_a_running_query(self):
+        """Quitting while agy runs: the query is cancelled at once instead of running to its end, and no worker calls back into the
+        closed app."""
+        import asyncio
+
+        started, cancelled = threading.Event(), threading.Event()
+
+        def slow_agy(env, cancel):
+            started.set()
+            end = time.monotonic() + 5
+            while time.monotonic() < end:
+                if cancel():
+                    cancelled.set()
+                    raise usage.Cancelled("cancelled")
+                time.sleep(0.01)
+            return FetchResult(usage=parse_usage(FREE))
+        app, done = self.app(), threading.Event()
+        self.source.fetcher, refresh = slow_agy, self.source.refresh
+
+        def tracked(**kwargs):
+            try:
+                return refresh(**kwargs)
+            finally:
+                done.set()
+        self.source.refresh = tracked
+        async with app.run_test(size=(120, 40)) as pilot:
+            self.assertTrue(await asyncio.to_thread(started.wait, 5))
+            while app.snapshot is None:  # the first redraw holds .lock briefly; let it finish before the temp folder goes
+                await pilot.pause(0.05)
+            app.exit()
+        self.assertTrue(await asyncio.to_thread(cancelled.wait, 1))
+        self.assertTrue(await asyncio.to_thread(done.wait, 5))  # the claim is released before the temp folder goes
+        self.assertIsNone(UsageCache().entry("default").fetched_at)
 
     async def test_switch_asks_first(self):
         from agyswap.tui.screens import SwitchScreen

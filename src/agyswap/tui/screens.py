@@ -361,7 +361,7 @@ class AutoScreen(Screen):
 
     # -- engine --
     def _start(self, *, dry_run: bool) -> None:
-        self._engine = autoswitch.Engine(self.cfg, self._from_thread, dry_run=dry_run, fetcher=self.app.source.fetcher)
+        self._engine = autoswitch.Engine(self.cfg, self._from_thread, dry_run=dry_run, fetcher=self.app.source.fetcher_for())
         self.run_worker(self._engine.run_loop, thread=True, group="engine", exit_on_error=False)
         badge = self.query_one("#mode-badge", Static)
         badge.update(" DRY-RUN " if dry_run else " LIVE ")

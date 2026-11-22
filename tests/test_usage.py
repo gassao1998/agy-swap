@@ -98,6 +98,22 @@ class ParseTest(unittest.TestCase):
             result = usage.fetch(dict(os.environ), agy=fake, timeout=30)
             self.assertEqual(result.usage["seven_day"]["pct"], 60.0)
 
+    def test_fetch_can_be_cancelled(self):
+        """The dashboard closing ends a running agy after a short grace instead of waiting out the timeout."""
+        import os
+        import tempfile
+        import time
+        from pathlib import Path
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {"AGYSWAP_HOME": tmp}), \
+                mock.patch.object(usage, "INTERRUPT_GRACE_S", 0.2):
+            fake = Path(tmp) / "agy.bat"
+            fake.write_text("@echo off\r\nping -n 30 127.0.0.1 >nul\r\n", encoding="ascii")
+            started = time.monotonic()
+            with self.assertRaises(usage.Cancelled):
+                usage.fetch(dict(os.environ), agy=fake, timeout=60, cancel=lambda: time.monotonic() - started > 0.5)
+            self.assertLess(time.monotonic() - started, 15)
+
     def test_envs(self):
         from pathlib import Path
         env = usage.profile_env(Path("C:/x/school"))

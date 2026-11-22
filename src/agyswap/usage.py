@@ -173,8 +173,13 @@ def classify(text: str, timed_out: bool = False) -> FetchResult:
     return FetchResult(usage=usage) if usage is not None else FetchResult(error="parse")
 
 
-def fetch(env: dict, agy: Path | None = None, timeout: float = TIMEOUT_S) -> FetchResult:
-    """Run agy -p /usage once. A sign-in URL ends the child process at once instead of waiting out agy's own 60 seconds."""
+class Cancelled(AgyswapError):
+    """The caller gave up on the query (the dashboard closed or its auto engine stopped); nothing is recorded for it."""
+
+
+def fetch(env: dict, agy: Path | None = None, timeout: float = TIMEOUT_S, cancel=None) -> FetchResult:
+    """Run agy -p /usage once. A sign-in URL ends the child process at once instead of waiting out agy's own 60 seconds.
+    cancel() returning True ends it the way Ctrl-C does (a short grace, then the process tree) and raises Cancelled."""
     cwd = ensure_data_root()
     try:
         proc = subprocess.Popen([str(agy or paths.agy_bin()), "-p", "/usage"], env=env, cwd=cwd,
@@ -202,8 +207,10 @@ def fetch(env: dict, agy: Path | None = None, timeout: float = TIMEOUT_S) -> Fet
             if time.monotonic() > deadline:
                 timed_out = True
                 break
+            if cancel is not None and cancel():
+                raise Cancelled("the usage query was cancelled")
             time.sleep(0.1)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, Cancelled):
         # Give agy a few seconds to wind down: it may be writing a refreshed token back, and killing it at that moment loses the token (cswap #590)
         _wait(proc, INTERRUPT_GRACE_S)
         raise

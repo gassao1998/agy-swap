@@ -22,7 +22,7 @@ from textual.theme import Theme
 from textual.widgets import Button, Label, Static
 from textual.worker import WorkerState
 
-from agyswap import accounts, output, pace, settings
+from agyswap import accounts, output, pace, settings, usage
 from agyswap.output import format_age
 from agyswap.tui.data import ActionResult, Snapshot, SnapshotSource, run_action
 from agyswap.usage_store import SERVE_TTL_S, STALE_OK_S, Entry
@@ -310,9 +310,24 @@ class AgyswapApp(App):
             full, self._full_next = self._full_next, False
             self.run_worker(partial(self._fetch_blocking, full), thread=True, group="fetch", exit_on_error=False)
 
+    def _call(self, fn, *args) -> None:
+        """call_from_thread for a worker, skipped once the app is closing: the result has nowhere to go, and textual raises after it
+        has closed."""
+        if self.source.closing.is_set():
+            return
+        try:
+            self.call_from_thread(fn, *args)
+        except RuntimeError:
+            if self.is_running:
+                raise
+
+    def on_unmount(self) -> None:
+        """Quitting: no agy starts any more and the running one ends after a short grace, so the process exits promptly and leaves
+        no agy behind (the auto page stops its engine when it unmounts, just before this)."""
+        self.source.closing.set()
+
     def _draw_blocking(self) -> None:
-        snap = self.source.take()
-        self.call_from_thread(self._apply, snap)
+        self._call(self._apply, self.source.take())
 
     def _apply(self, snap: Snapshot) -> None:
         self._drawing, self._last_error = False, ""
@@ -320,12 +335,16 @@ class AgyswapApp(App):
         self._update_status()
 
     def _fetch_blocking(self, full: bool) -> None:
-        self.source.refresh(full=full)
-        self.call_from_thread(self._fetched)
+        try:
+            queried = self.source.refresh(full=full, stopped=lambda: self.store_only)
+        except usage.Cancelled:  # closing, or the auto page took over the querying
+            queried = False
+        self._call(self._fetched, queried)
 
-    def _fetched(self) -> None:
+    def _fetched(self, queried: bool) -> None:
         self._fetching, self._fetch_started = False, None
-        self.redraw()
+        if queried:  # the cache changed; otherwise the tick's own redraw already showed everything
+            self.redraw()
 
     def redraw(self) -> None:
         if not self._drawing:
@@ -341,7 +360,7 @@ class AgyswapApp(App):
         self.refresh_status = " · ".join(parts)
 
     def on_worker_state_changed(self, event) -> None:
-        if event.state is not WorkerState.ERROR:
+        if event.state not in (WorkerState.ERROR, WorkerState.CANCELLED):
             return
         group = event.worker.group
         if group == "draw":
@@ -350,6 +369,8 @@ class AgyswapApp(App):
             self._fetching, self._fetch_started = False, None
         elif group == "action":
             self.busy = False
+        if event.state is WorkerState.CANCELLED:
+            return
         msg = f"{group} failed: {event.worker.error}"
         if msg != self._last_error:
             self._last_error = msg
@@ -369,8 +390,7 @@ class AgyswapApp(App):
         self.run_worker(partial(self._action_blocking, label, fn), thread=True, group="action", exit_on_error=False)
 
     def _action_blocking(self, label: str, fn) -> None:
-        result = run_action(fn)
-        self.call_from_thread(self._action_done, label, result)
+        self._call(self._action_done, label, run_action(fn))
 
     def _action_done(self, label: str, result: ActionResult) -> None:
         self.busy = False
@@ -406,7 +426,8 @@ class AgyswapApp(App):
         models = switch.parse_models(settings.load()["autoswitch.model"])
         self.confirm("Switch the global login to the account with the most quota left?\n\n"
                      "New agy processes and the Antigravity App follow it.", "Switch (best)", "Switch",
-                     lambda: self.start_action("Switch (best)", partial(switch.switch, strategy="best", models=models)))
+                     lambda: self.start_action("Switch (best)", partial(switch.switch, strategy="best", models=models,
+                                                                        fetcher=self.source.fetcher_for())))
 
     def do_toggle_disabled(self, num: str) -> None:
         from agyswap import manage
