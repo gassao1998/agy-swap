@@ -7,6 +7,7 @@ with each window and reset time (cswap #219, #587), and the event log.
 """
 from __future__ import annotations
 
+import asyncio
 import time
 from dataclasses import replace
 from functools import partial
@@ -80,9 +81,12 @@ class DashboardScreen(Screen):
 
     app: "AgyswapApp"
 
+    _ACCOUNT_MENUS = {"disable / enable": ("disable", True), "remove account": ("remove", False)}
+
     def __init__(self) -> None:
         super().__init__()
         self._stack: list[tuple[str, list[tuple[str, str]]]] = []
+        self._menu_lock = asyncio.Lock()
 
     def compose(self) -> ComposeResult:
         yield AccountsPanel(id="accounts-panel")
@@ -95,6 +99,17 @@ class DashboardScreen(Screen):
         await self._push("menu", [("Switch account…", "switch"), ("Watch accounts", "watch"), ("Auto-switch view", "auto"),
                                   ("Add current login…", "add"), ("Disable / enable account…", "disable-menu"),
                                   ("Remove account…", "remove-menu"), ("Theme…", "theme-menu"), ("Quit", "quit")])
+        self.watch(self.app, "snapshot", self._follow_roster)
+
+    async def _follow_roster(self, _snap) -> None:
+        """An open account submenu follows the roster: it may have opened before the first snapshot, or an account changed since."""
+        if len(self._stack) < 2 or self._stack[-1][0] not in self._ACCOUNT_MENUS:
+            return
+        title, entries = self._stack[-1]
+        fresh = self._accounts(*self._ACCOUNT_MENUS[title])
+        if fresh != entries:
+            self._stack[-1] = (title, fresh)
+            await self._render_menu(keep_cursor=True)
 
     def _accounts(self, prefix: str, state: bool = False) -> list[tuple[str, str]]:
         snap = self.app.snapshot
@@ -116,12 +131,16 @@ class DashboardScreen(Screen):
             self._stack.pop()
             await self._render_menu()
 
-    async def _render_menu(self) -> None:
-        self.query_one("#menu-title", Static).update(" › ".join(t for t, _ in self._stack))
-        menu = self.query_one("#menu", ListView)
-        await menu.clear()
-        await menu.extend(MenuItem(label, action) for label, action in self._stack[-1][1])
-        menu.index = 0
+    async def _render_menu(self, keep_cursor: bool = False) -> None:
+        # Keys run on the app's message queue and selections on this screen's, so two renders can overlap at the awaits below;
+        # unlocked, both cleared before either extended and the menu came out doubled
+        async with self._menu_lock:
+            self.query_one("#menu-title", Static).update(" › ".join(t for t, _ in self._stack))
+            menu = self.query_one("#menu", ListView)
+            index, entries = menu.index or 0, self._stack[-1][1]
+            await menu.clear()
+            await menu.extend(MenuItem(label, action) for label, action in entries)
+            menu.index = min(index, len(entries) - 1) if keep_cursor else 0
 
     async def on_list_view_selected(self, event: ListView.Selected) -> None:
         if not isinstance(event.item, MenuItem):

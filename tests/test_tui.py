@@ -415,6 +415,26 @@ class PilotTest(Roster, unittest.IsolatedAsyncioTestCase):
         add.assert_not_called()
         set_disabled.assert_called_once_with("2", True)
 
+    async def test_menu_renders_never_interleave(self):
+        """A selection and a key run on different message queues: overlapping renders leave one copy of the menu, and an open
+        account submenu follows the roster."""
+        import asyncio
+
+        app = self.app()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await self.settle(app, pilot)
+            screen = app.screen
+            await asyncio.gather(screen._push("remove account", screen._accounts("remove")), screen._pop())
+            await pilot.pause()
+            self.assertEqual(len(screen.query_one("#menu").children), 8)
+            await screen._push("remove account", screen._accounts("remove"))
+            data = accounts.load_sequence()
+            data["accounts"]["3"] = {"email": "third@gmail.com", "folder": "third"}
+            accounts.save_sequence(data)
+            app.redraw()
+            await self.settle(app, pilot)
+            self.assertEqual(len(screen.query_one("#menu").children), 4)  # three accounts and back
+
     async def test_switch_page_best_pick_and_watch_focus(self):
         from agyswap.tui.app import ConfirmModal
         from agyswap.tui.screens import DashboardScreen, SwitchScreen, WatchScreen
