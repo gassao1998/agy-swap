@@ -8,7 +8,6 @@ Everything is blocking (file locks, Credential Manager, agy) and runs in a threa
 """
 from __future__ import annotations
 
-import contextlib
 import io
 import sys
 import threading
@@ -115,22 +114,37 @@ class ActionResult:
     payload: dict | None = field(default=None)
 
 
+class _Routed:
+    """A sys.std* stand-in: the thread that installed it reads and writes `mine`, every other thread the stream it replaced."""
+
+    def __init__(self, other, mine) -> None:
+        self._other, self._mine, self._owner = other, mine, threading.get_ident()
+
+    def __getattr__(self, name):
+        return getattr(self._mine if threading.get_ident() == self._owner else self._other, name)
+
+
 def run_action(fn) -> ActionResult:
-    """Run a switch or manage call with stdout and stderr captured. stdin is swapped for an empty stream, so an unexpected prompt
-    reads EOF instead of freezing the app (cswap run_action). manage calls return [(style, text)], switch calls a payload dict."""
+    """Run a switch or manage call with stdout and stderr captured. stdin reads as an empty stream, so an unexpected prompt
+    reads EOF instead of freezing the app (cswap run_action). manage calls return [(style, text)], switch calls a payload dict.
+    sys.std* are process-wide while the draw, fetch and engine threads keep running, so only this thread is redirected."""
     buf = io.StringIO()
-    saved = sys.stdin
-    sys.stdin = io.StringIO()
+    names = ("stdin", "stdout", "stderr")
+    saved = [getattr(sys, n) for n in names]
+    routed = [_Routed(old, mine) for old, mine in zip(saved, (io.StringIO(), buf, buf))]
+    for name, stream in zip(names, routed):
+        setattr(sys, name, stream)
     try:
-        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
-            try:
-                result = fn()
-            except AgyswapError as e:
-                return ActionResult(False, f"{buf.getvalue()}Error: {e}".strip())
-            except EOFError:
-                return ActionResult(False, f"{buf.getvalue()}Error: interactive input is not available here".strip())
+        try:
+            result = fn()
+        except AgyswapError as e:
+            return ActionResult(False, f"{buf.getvalue()}Error: {e}".strip())
+        except EOFError:
+            return ActionResult(False, f"{buf.getvalue()}Error: interactive input is not available here".strip())
     finally:
-        sys.stdin = saved
+        for name, stream, old in zip(names, routed, saved):
+            if getattr(sys, name) is stream:  # textual puts its own streams back when it closes, possibly mid-action
+                setattr(sys, name, old)
     if isinstance(result, dict):
         return ActionResult(True, buf.getvalue().strip(), result)
     lines = [text for _style, text in result or []]

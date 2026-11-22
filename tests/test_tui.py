@@ -3,6 +3,7 @@ the CLI wiring, and the screens through textual's headless Pilot. The Pilot test
 import contextlib
 import importlib.util
 import io
+import sys
 import threading
 import time
 import unittest
@@ -146,6 +147,28 @@ class RunActionTest(unittest.TestCase):
         self.assertFalse(result.ok)
         self.assertEqual(result.text, "before\nError: nope")
         self.assertFalse(run_action(lambda: input("prompt? ")).ok)  # an unexpected prompt reads EOF, never blocks
+
+    def test_other_threads_keep_their_streams(self):
+        """sys.std* are process-wide: while an action runs, another thread's output still goes where it went before, not into the
+        action's result, and the original streams are back afterwards."""
+        inside, done, outer = threading.Event(), threading.Event(), io.StringIO()
+
+        def action():
+            print("mine")
+            inside.set()
+            done.wait(5)
+            return [("ok", "done")]
+        with contextlib.redirect_stdout(outer):
+            box = []
+            worker = threading.Thread(target=lambda: box.append(run_action(action)))
+            worker.start()
+            self.assertTrue(inside.wait(5))
+            print("theirs")
+            done.set()
+            worker.join(5)
+            self.assertIs(sys.stdout, outer)
+        self.assertEqual(box[0].text, "mine\ndone")
+        self.assertEqual(outer.getvalue(), "theirs\n")
 
 
 class AppearanceTest(unittest.TestCase):
