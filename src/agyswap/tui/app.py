@@ -275,7 +275,8 @@ class AgyswapApp(App):
         super().__init__()
         self.source = source or SnapshotSource()
         self._start, self.theme_setting, self._detected = start, theme_setting, detected
-        self.store_only = False  # the auto page's engine is the only one querying
+        self.auto_page = False
+        self.engines: set = set()  # auto engines whose threads have not returned yet (a stopped one may still be finishing a tick)
         self._drawing = self._fetching = self._full_next = False
         self._fetch_started: float | None = None
         self._last_error = ""
@@ -299,6 +300,11 @@ class AgyswapApp(App):
     @property
     def palette(self) -> Palette:
         return Palette.of(self.current_theme)
+
+    @property
+    def store_only(self) -> bool:
+        """The auto page's engine is the only one querying, until its last engine thread has returned."""
+        return self.auto_page or bool(self.engines)
 
     # -- redraw and query lanes --
     def _tick(self) -> None:
@@ -325,6 +331,8 @@ class AgyswapApp(App):
         """Quitting: no agy starts any more and the running one ends after a short grace, so the process exits promptly and leaves
         no agy behind (the auto page stops its engine when it unmounts, just before this)."""
         self.source.closing.set()
+        for engine in list(self.engines):
+            engine.stop()
 
     def _draw_blocking(self) -> None:
         self._call(self._apply, self.source.take())

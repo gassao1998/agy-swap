@@ -18,6 +18,7 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.screen import Screen
 from textual.widgets import Footer, ListItem, ListView, RichLog, Static
+from textual.worker import WorkerState
 
 from agyswap import autoswitch, output, settings
 from agyswap.switch import parse_models
@@ -326,7 +327,10 @@ class AutoScreen(Screen):
 
     def __init__(self) -> None:
         super().__init__()
-        self._engine = None
+        self._engine = None  # the engine this page runs; a stopped one is dropped at once, even while its thread finishes
+        self._worker = None
+        self._want: bool | None = None  # dry_run of the engine waiting to start
+        self._live = False
         self._adjusting = False
         self.cfg = autoswitch.AutoSettings.load()
         self._configured = self.cfg.threshold
@@ -343,7 +347,7 @@ class AutoScreen(Screen):
         yield Footer()
 
     def on_mount(self) -> None:
-        self.app.store_only = True
+        self.app.auto_page = True
         self.app.threshold_pct, self.app.weekly_threshold_pct = self.cfg.threshold, self.cfg.weekly_threshold
         self._summary()
         self.watch(self.app, "snapshot", self._candidates)
@@ -351,37 +355,75 @@ class AutoScreen(Screen):
         self._start(dry_run=True)
 
     def on_unmount(self) -> None:
-        if self._engine is not None:
-            self._engine.stop()
+        self._stop_engine()
+        self._want = None
         self.app.threshold_pct = self._configured
-        self.app.store_only = False
+        self.app.auto_page = False  # the dashboard's queries resume once the engine thread has returned too
 
     def _log(self, text: str, style: str | None = None) -> None:
         self.query_one("#event-log", RichLog).write(Text(text, style=style or self.app.palette.muted))
 
-    # -- engine --
-    def _start(self, *, dry_run: bool) -> None:
-        self._engine = autoswitch.Engine(self.cfg, self._from_thread, dry_run=dry_run, fetcher=self.app.source.fetcher_for())
-        self.run_worker(self._engine.run_loop, thread=True, group="engine", exit_on_error=False)
+    def _badge(self, label: str, cls: str) -> None:
         badge = self.query_one("#mode-badge", Static)
-        badge.update(" DRY-RUN " if dry_run else " LIVE ")
-        badge.set_classes("dry" if dry_run else "live")
-        self._log(f"— engine started: {'DRY-RUN (watching only)' if dry_run else 'LIVE (will switch accounts)'} —")
+        badge.update(label)
+        badge.set_classes(cls)
 
-    def _restart(self, *, dry_run: bool) -> None:
+    # -- engine --
+    def _stop_engine(self) -> None:
         if self._engine is not None:
             self._engine.stop()
-        self._start(dry_run=dry_run)
+            self._engine = None
 
-    def _from_thread(self, ev: dict) -> None:
+    def _start(self, *, dry_run: bool) -> None:
+        """Stop the running engine and start one in the given mode once no older engine thread or dashboard query is left, so two
+        engines never run together and the badge never shows a mode while an engine of the other mode can still switch."""
+        self._stop_engine()
+        self._want, self._live = dry_run, not dry_run
+        self._launch()
+
+    def _launch(self) -> None:
+        if self._want is None or not self.is_attached:
+            return
+        if self.app.engines or self.app._fetching:
+            self._badge(" STOPPING… " if self.app.engines else " STARTING… ", "dry")
+            self.set_timer(0.1, self._launch)
+            return
+        dry_run, self._want, app = self._want, None, self.app
+        engine = autoswitch.Engine(self.cfg, lambda ev: self._from_thread(engine, ev), dry_run=dry_run,
+                                   fetcher=app.source.fetcher_for(lambda: engine.stopped))
+        self._engine = engine
+        app.engines.add(engine)
+        self._worker = self.run_worker(partial(self._run_engine, app, engine), thread=True, group="engine", exit_on_error=False)
+        self._badge(" DRY-RUN " if dry_run else " LIVE ", "dry" if dry_run else "live")
+        self._log(f"— engine started: {'DRY-RUN (watching only)' if dry_run else 'LIVE (will switch accounts)'} —")
+
+    @staticmethod
+    def _run_engine(app, engine) -> int:
         try:
-            self.app.call_from_thread(self._on_event, ev)
+            return engine.run_loop()
+        finally:
+            app.engines.discard(engine)
+
+    def on_worker_state_changed(self, event) -> None:
+        """The running engine's loop ended without being stopped (it crashed): say so instead of keeping its badge."""
+        if event.worker is not self._worker or self._engine is None or event.state not in (WorkerState.ERROR, WorkerState.SUCCESS):
+            return
+        self._engine = None
+        self._badge(" STOPPED ", "dry")
+        self._log(f"— engine stopped: {event.worker.error or 'its loop ended'}; press l to start it again in dry-run —",
+                  self.app.palette.warn)
+
+    def _from_thread(self, engine, ev: dict) -> None:
+        try:
+            self.app.call_from_thread(self._on_event, engine, ev)
         except Exception:  # the app is closing; the event has nowhere to go
             pass
 
-    def _on_event(self, ev: dict) -> None:
+    def _on_event(self, engine, ev: dict) -> None:
         if not self.is_attached:
             return
+        if engine is not self._engine and not (ev["event"] == "switch" and not ev.get("dryRun")):
+            return  # a stopped engine winding down; only a real switch it had already made is worth showing
         palette = self.app.palette
         role = _EVENT_STYLES.get(ev["event"])
         style = getattr(palette, role) if role else palette.muted if ev["event"] in ("poll", "no-switch", "sleep") else palette.fg
@@ -393,19 +435,21 @@ class AutoScreen(Screen):
         self.app.redraw()  # the engine just wrote the usage cache
 
     def action_toggle_live(self) -> None:
-        if self._engine is not None and self._engine.dry_run:
+        if self._live or (self._engine is None and self._want is None):  # back to dry-run, or a stopped engine starts again in it
+            self._start(dry_run=True)
+        else:
             self.app.confirm("Go live? agyswap will switch the global login automatically when the threshold is reached, "
                              "which may move the Antigravity App too.\n\n(The same as running agyswap auto in a terminal.)",
-                             "Go live", "Go live", lambda: self._restart(dry_run=False))
-        else:
-            self._restart(dry_run=True)
+                             "Go live", "Go live", lambda: self._start(dry_run=False) if self.is_attached else None)
 
     def action_back(self) -> None:
-        self._end_adjust() if self._adjusting else self.app.pop_screen()
+        self._cancel_adjust() if self._adjusting else self.app.pop_screen()
 
     # -- session threshold --
     def check_action(self, action: str, parameters: tuple) -> bool | None:
-        return False if action in ("step", "adjust_done") and not self._adjusting else True
+        if action in ("step", "adjust_done"):
+            return self._adjusting
+        return not (action == "toggle_live" and self._adjusting)  # go live only on a threshold already applied
 
     def action_adjust(self) -> None:
         if self._adjusting:
@@ -420,19 +464,26 @@ class AutoScreen(Screen):
 
     def action_step(self, delta: float) -> None:
         spec = settings.SPECS["autoswitch.threshold"]
-        value = min(spec.hi, max(spec.lo, self.cfg.threshold + delta))
+        self._set_threshold(min(spec.hi, max(spec.lo, self.cfg.threshold + delta)))
+
+    def _set_threshold(self, value: float) -> None:
         self.cfg = replace(self.cfg, threshold=value)
         self.app.threshold_pct = value
         self.query_one("#auto-active-panel", AccountsPanel).refresh()
         self._summary()
         self._candidates(self.app.snapshot)
 
+    def _cancel_adjust(self) -> None:
+        """Esc: the threshold goes back to what the engine runs with, and the engine is left alone."""
+        self._set_threshold(self._entry)
+        self._end_adjust()
+
     def _end_adjust(self) -> None:
         self._adjusting = False
         self._summary()
         self.refresh_bindings()
         if self.cfg.threshold != self._entry:  # the engine decides again at the new value right away
-            self._restart(dry_run=self._engine is None or self._engine.dry_run)
+            self._start(dry_run=not self._live)
             self._log(f"— threshold set to {autoswitch.pct_label(self.cfg.threshold)}% for this session —")
 
     # -- summary and candidates (cswap #219, #587) --

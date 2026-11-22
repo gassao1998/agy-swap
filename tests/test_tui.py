@@ -182,6 +182,43 @@ class AppearanceTest(unittest.TestCase):
         self.assertEqual(out.getvalue(), "")
 
 
+def fake_engines(linger=0.0):
+    """A stand-in for autoswitch.Engine on the auto page, and the list of every one made. It runs until stopped, then takes
+    `linger` seconds to finish its tick; `peak` is the most loops that ever ran at once, and `crash` makes the next loop raise."""
+    made = []
+
+    class FakeEngine:
+        peak, running, crash, lock = 0, 0, None, threading.Lock()
+
+        def __init__(self, cfg, on_event, *, dry_run=False, fetcher=None):
+            self.cfg, self.on_event, self.dry_run, self._stop = cfg, on_event, dry_run, threading.Event()
+            made.append(self)
+
+        @property
+        def stopped(self):
+            return self._stop.is_set()
+
+        def run_loop(self):
+            cls = type(self)
+            with cls.lock:
+                cls.running += 1
+                cls.peak = max(cls.peak, cls.running)
+            try:
+                if cls.crash is not None:
+                    raise cls.crash
+                self.on_event(autoswitch.event("no-switch", reason="below-threshold"))
+                self._stop.wait(10)
+                time.sleep(linger)
+                return 0
+            finally:
+                with cls.lock:
+                    cls.running -= 1
+
+        def stop(self):
+            self._stop.set()
+    return FakeEngine, made
+
+
 def run_cli(argv):
     out, err = io.StringIO(), io.StringIO()
     with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
@@ -244,8 +281,16 @@ class PilotTest(Roster, unittest.IsolatedAsyncioTestCase):
 
     async def settle(self, app, pilot):
         for _ in range(3):
-            await app.workers.wait_for_complete()
+            waiting = [w for w in app.workers if w.group != "engine"]  # an auto engine runs until it is stopped
+            if waiting:
+                await app.workers.wait_for_complete(waiting)
             await pilot.pause()
+
+    async def until(self, pilot, condition, timeout=5.0):
+        end = time.monotonic() + timeout
+        while not condition():
+            self.assertLess(time.monotonic(), end, "timed out")
+            await pilot.pause(0.05)
 
     async def test_dashboard_redraws_within_the_limits(self):
         """Same as above (cswap #496), through the app: ten ticks make one Credential Manager read and query only the account the cache plan has due."""
@@ -333,19 +378,7 @@ class PilotTest(Roster, unittest.IsolatedAsyncioTestCase):
         """cswap #219, #587: strategy, threshold, model categories, and each candidate's windows with reset times; the engine starts in dry-run."""
         settings.set_value("autoswitch.strategy", "weekly-first")
         settings.set_value("autoswitch.model", "claude")
-        engines = []
-
-        class FakeEngine:
-            def __init__(self, cfg, on_event, *, dry_run=False, fetcher=None):
-                self.cfg, self.on_event, self.dry_run, self.stopped = cfg, on_event, dry_run, False
-                engines.append(self)
-
-            def run_loop(self):
-                self.on_event(autoswitch.event("no-switch", reason="below-threshold"))
-                return 0
-
-            def stop(self):
-                self.stopped = True
+        FakeEngine, engines = fake_engines()
 
         with mock.patch("agyswap.autoswitch.Engine", FakeEngine):
             app = self.app()
@@ -362,16 +395,68 @@ class PilotTest(Roster, unittest.IsolatedAsyncioTestCase):
                 self.assertIn("Claude and GPT models 7d", candidates)
                 self.assertIn("resets", candidates)
                 await pilot.press("t", "right", "right", "enter")
-                await self.settle(app, pilot)
+                await self.until(pilot, lambda: len(engines) == 2)  # restarted once for the new session threshold
                 self.assertIn("threshold 92%", str(app.screen.query_one("#auto-summary").render()))
                 await pilot.press("l", "n")  # going live is refused at the prompt
                 await pilot.press("escape")
-                await self.settle(app, pilot)
-                self.assertFalse(app.store_only)
+                await self.until(pilot, lambda: not app.store_only)
         self.assertTrue(all(e.dry_run for e in engines))
-        self.assertEqual(len(engines), 2)  # restarted once for the new session threshold
+        self.assertEqual(len(engines), 2)
         self.assertTrue(engines[-1].stopped)
         self.assertEqual(settings.load()["autoswitch.threshold"], 90.0)  # the session threshold is never saved
+
+    async def test_auto_page_never_runs_two_engines(self):
+        """Going live, back to dry-run, and leaving: each new engine starts only after the old thread has returned, the badge says
+        STOPPING meanwhile rather than the new mode, and the dashboard's queries resume only after the last engine is gone."""
+        FakeEngine, engines = fake_engines(linger=0.4)  # a stopped engine takes a while to finish its tick
+        with mock.patch("agyswap.autoswitch.Engine", FakeEngine):
+            app = self.app()
+            async with app.run_test(size=(140, 50)) as pilot:
+                await self.settle(app, pilot)
+                await pilot.press("g")
+                await self.until(pilot, lambda: len(engines) == 1)
+                badge = app.screen.query_one("#mode-badge")
+                await pilot.press("l", "y")
+                self.assertIn("STOPPING", str(badge.render()))
+                await self.until(pilot, lambda: len(engines) == 2)
+                self.assertIn("LIVE", str(badge.render()))
+                await pilot.press("l")  # back to dry-run: the live engine may still be finishing
+                self.assertIn("STOPPING", str(badge.render()))
+                await self.until(pilot, lambda: len(engines) == 3)
+                self.assertIn("DRY-RUN", str(badge.render()))
+                await pilot.press("escape")
+                self.assertTrue(app.store_only)  # the last engine is still finishing its tick
+                await self.until(pilot, lambda: not app.store_only)
+        self.assertEqual([e.dry_run for e in engines], [True, False, True])
+        self.assertEqual(FakeEngine.peak, 1)
+        self.assertTrue(all(e.stopped for e in engines))
+
+    async def test_auto_page_threshold_and_crash(self):
+        """Esc while adjusting puts the threshold back without a restart, l waits until the threshold is applied, and an engine
+        that crashes says so instead of keeping its badge."""
+        FakeEngine, engines = fake_engines()
+        with mock.patch("agyswap.autoswitch.Engine", FakeEngine):
+            app = self.app()
+            async with app.run_test(size=(140, 50)) as pilot:
+                await self.settle(app, pilot)
+                await pilot.press("g")
+                await self.until(pilot, lambda: len(engines) == 1)
+                screen = app.screen
+                await pilot.press("t", "right", "l")
+                self.assertIs(app.screen, screen)  # no Go live prompt while adjusting
+                await pilot.press("escape")
+                self.assertIs(app.screen, screen)  # Esc ended the adjusting, not the page
+                self.assertIn("threshold 90%", str(screen.query_one("#auto-summary").render()))
+                self.assertEqual(app.threshold_pct, 90.0)
+                FakeEngine.crash = RuntimeError("boom")
+                await pilot.press("l", "y")
+                await self.until(pilot, lambda: "STOPPED" in str(screen.query_one("#mode-badge").render()))
+                await pilot.press("l")  # starts again in dry-run, without a prompt
+                FakeEngine.crash = None
+                await self.until(pilot, lambda: len(engines) == 3)
+                self.assertIs(app.screen, screen)
+                await pilot.press("escape")
+        self.assertEqual([e.dry_run for e in engines], [True, False, True])
 
     def test_no_mouse(self):
         """cswap #390: --no-mouse leaves mouse tracking off."""
