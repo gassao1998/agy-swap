@@ -133,6 +133,12 @@
 - Code, comments, docstrings and CLI messages in `src/` and `tests/` are in English. Messages that have a
   counterpart in claude-swap 1.0.0 (switch, add, remove, alias, threshold, priority, swap, move, list, status and
   the flag errors) reuse its wording and layout.
+- `run --auto` with `--model` skips an account that does not offer that model (for example the school account has
+  no Gemini 4 or Claude 5.5 models), the start account included, and says so on stderr. The ids come from
+  `agy models`, run in each account's folder and cached per account in `cache\models.json` for a day. A list that
+  could not be fetched is unknown and never rules an account out, and only accounts actually considered are
+  asked. When no account both offers the model and has quota, the start account still runs, with a warning.
+  Ids match exactly, ignoring case; with no `--model` nothing changes.
 
 ### Removed
 
