@@ -25,7 +25,7 @@ Where agyswap stands:
 
 Accounts have been banned before. After the February 2026 wave, Google added a form that lifts a first ban; a second violation means a permanent ban ([forum](https://discuss.ai.google.dev/t/131424)). Google's general terms also allow it to suspend your access or delete your Google Account if you materially or repeatedly breach service-specific terms ([terms](https://policies.google.com/terms)).
 
-The supported route for scripted use is an API key (the November reply says to set `modelProvider` to `gemini` together with `GEMINI_API_KEY`) or Pay As You Go on Google Cloud. agyswap's `add-token` only sets `GEMINI_API_KEY`, and none of this has been tested here.
+Running `agy -p` yourself, by hand or from your own scripts, is supported under consumer plans. For third-party agents, the November reply names an API key (set `modelProvider` to `gemini` together with `GEMINI_API_KEY`) or Pay As You Go on Google Cloud as the supported route. agyswap's `add-token` only sets `GEMINI_API_KEY`, and none of this has been tested here.
 
 agyswap doesn't change what Google allows. If you use it, the risk falls on your own accounts.
 

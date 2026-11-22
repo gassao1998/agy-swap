@@ -25,7 +25,7 @@ agyswap 碰到的地方：
 
 真的有人被停過。2026 年 2 月那一波之後，Google 開了申訴表單，第一次可以解除，再犯就永久停用（[論壇](https://discuss.ai.google.dev/t/131424)）。Google 的服務條款也保留權利，嚴重或重複違反服務專屬條款時，可以停止你使用服務，或刪除整個 Google 帳號（[條款](https://policies.google.com/terms)）。
 
-官方支援的腳本用法是改用 API key 登入（11 月那則回覆說要把 `modelProvider` 設成 `gemini`，再設 `GEMINI_API_KEY`），或改用 Google Cloud 的 Pay As You Go。agyswap 的 `add-token` 只設 `GEMINI_API_KEY`，這些都還沒在這裡實測過。
+自己手動或從自己的腳本跑 `agy -p`，消費者方案本來就支援。第三方 agent 的話，11 月那則回覆指出官方支援的做法是改用 API key 登入（把 `modelProvider` 設成 `gemini`，再設 `GEMINI_API_KEY`），或改用 Google Cloud 的 Pay As You Go。agyswap 的 `add-token` 只設 `GEMINI_API_KEY`，這些都還沒在這裡實測過。
 
 agyswap 改變不了 Google 允許什麼。要用的話，風險由你自己的帳號承擔。
 
