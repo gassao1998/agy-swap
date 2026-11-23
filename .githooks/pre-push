@@ -1,5 +1,13 @@
 #!/bin/sh
 # Block pushes with non-English commit messages, non-English text added to English-only files,
-# or a README.md / README.zh-TW.md pair that changed out of sync. Enable with:
+# or a README.md / README.zh-TW.md pair that changed out of sync. Then run the user's global pre-push hook
+# if one is set, because pointing core.hooksPath at this folder replaces the global hooks folder.
+# Enable with:
 #   git config core.hooksPath .githooks
-exec python -X utf8 "$(dirname "$0")/check_english.py" push
+input=$(cat)
+printf '%s\n' "$input" | python -X utf8 "$(dirname "$0")/check_english.py" push || exit 1
+global_dir="$(git config --global --get core.hooksPath)"
+if [ -n "$global_dir" ] && [ -x "$global_dir/pre-push" ] && \
+   [ "$(cd "$global_dir" && pwd -P)" != "$(cd "$(dirname "$0")" && pwd -P)" ]; then
+  printf '%s\n' "$input" | "$global_dir/pre-push" "$@" || exit 1
+fi
