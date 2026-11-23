@@ -1,6 +1,6 @@
 # agyswap
 
-[English](README.md)
+[English](README.md) | **繁體中文**
 
 agyswap 讓 Windows 上的 Antigravity CLI（`agy`）同時記住幾個 Google 帳號的登入，需要時換來換去。每個帳號的額度分開算。快用完時，你可以把全域登入換成別的帳號，或只讓某個終端機改用別的帳號；也可以交給 `agyswap auto`，讓它在使用中的帳號撞到上限前自動換掉。
 

@@ -23,10 +23,18 @@ ZERO = "0" * 40
 # Code points instead of literal characters keep this English-only file plain ASCII.
 CJK_RANGES = ((0x2E80, 0x2FDF), (0x3000, 0x30FF), (0x3100, 0x31FF), (0x3400, 0x4DBF), (0x4E00, 0x9FFF),
               (0xAC00, 0xD7AF), (0xF900, 0xFAFF), (0xFE30, 0xFE4F), (0xFF00, 0xFFEF))
+# The one Chinese label README.md may carry: the language switch at the top, linking to README.zh-TW.md.
+ZH_LABEL = "".join(map(chr, (0x7E41, 0x9AD4, 0x4E2D, 0x6587)))  # Traditional Chinese, written in Chinese
+LANGUAGE_SWITCH = f"**English** | [{ZH_LABEL}](README.zh-TW.md)"
 
 
 def has_cjk(text):
     return any(lo <= ord(c) <= hi for c in text for lo, hi in CJK_RANGES)
+
+
+def allowed_line(path, line):
+    """The language switch at the top of README.md is the only CJK an English-only file may contain."""
+    return path == "README.md" and line.strip() == LANGUAGE_SWITCH
 
 
 def english_only(path):
@@ -52,7 +60,7 @@ def added_cjk_lines(commit, cwd=None):
         if line.startswith("+++ "):
             p = line[4:]
             path = p[2:] if p.startswith("b/") else None
-        elif line.startswith("+") and path and english_only(path) and has_cjk(line[1:]):
+        elif line.startswith("+") and path and english_only(path) and has_cjk(line[1:]) and not allowed_line(path, line[1:]):
             hits.append((path, line[1:].strip()[:80]))
     return hits
 
@@ -114,6 +122,8 @@ def selftest():
     assert readme_sync_problem({"README.md", "README.zh-TW.md"}) is None and readme_sync_problem({"src/x.py"}) is None
     assert english_only("CHANGELOG.md") and english_only(".githooks/pre-push")
     assert english_only("src/agyswap/cli.py") and english_only("tests/test_cli.py") and not english_only("agyswap.py")
+    assert allowed_line("README.md", LANGUAGE_SWITCH) and allowed_line("README.md", LANGUAGE_SWITCH + "  ")
+    assert not allowed_line("README.md", f"{LANGUAGE_SWITCH} {zh}") and not allowed_line("CHANGELOG.md", LANGUAGE_SWITCH)
     with tempfile.TemporaryDirectory() as d:
         def g(*a):
             return git(*a, cwd=d)
@@ -132,7 +142,7 @@ def selftest():
             return g("rev-parse", "HEAD").strip()
 
         base = commit({"CHANGELOG.md": "# Changelog\n"}, "chore: start")
-        good = commit({"README.md": "hello\n", "README.zh-TW.md": f"{zh}\n", "src.py": f"x = '{zh}'\n"},
+        good = commit({"README.md": f"{LANGUAGE_SWITCH}\n\nhello\n", "README.zh-TW.md": f"{zh}\n", "src.py": f"x = '{zh}'\n"},
                       "docs: add both readmes")
         assert check_push([f"refs/heads/main {good} refs/heads/main {base}"], cwd=d) == []
         bad = commit({"CHANGELOG.md": f"# Changelog\n\n- {zh}\n", "README.md": "hello again\n"}, f"feat: {zh}")

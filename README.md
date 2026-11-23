@@ -1,10 +1,10 @@
 # agyswap
 
+**English** | [繁體中文](README.zh-TW.md)
+
 agyswap keeps several Google accounts logged in to the Antigravity CLI (`agy`) on Windows and moves between them. Each account has its own quota. When one runs low, you can switch the global login, run one terminal as another account, or let `agyswap auto` switch before the active account hits its limit.
 
 The commands, flags, `--json` fields and settings keys follow [claude-swap](https://github.com/realiti4/claude-swap) (`cswap`) 1.0.0, a multi-account switcher for Claude Code, so cswap users will find their way around. agyswap is not affiliated with Google.
-
-[Traditional Chinese version](README.zh-TW.md)
 
 ## Status
 
