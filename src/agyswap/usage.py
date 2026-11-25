@@ -13,7 +13,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from agyswap import paths
+from agyswap import pace, paths
 from agyswap.errors import AgyswapError
 from agyswap.fsutil import ensure_data_root
 from agyswap.paths import real_home
@@ -49,8 +49,25 @@ def parse_lines(text: str) -> list[dict]:
         row = {"name": f[0], "window": window, "pct": max(0.0, min(100.0, 100.0 - remaining))}
         if len(f) > 3 and f[3]:
             row["resets_at"] = f[3]
-        rows.append(row)
+        rows.append(mark_not_started(row))
     return rows
+
+
+def mark_not_started(w: dict) -> dict:
+    """agy reports a limit that has never been used with a reset time of 1970-01-01. Keep that out of resets_at so countdowns, auto-switch and pacing never see it.
+    Also applied to cached readings, which may still hold the old value."""
+    ts = pace.parse_ts(w.get("resets_at"))
+    if ts is not None and ts <= 0:
+        del w["resets_at"]
+        w["not_started"] = True
+    return w
+
+
+def mark_cached(usage: dict) -> dict:
+    for w in (usage.get("five_hour"), usage.get("seven_day"), *(usage.get("scoped") or [])):
+        if isinstance(w, dict):
+            mark_not_started(w)
+    return usage
 
 
 def is_class(category: str) -> bool:
@@ -71,7 +88,7 @@ def to_usage(rows: list[dict]) -> dict | None:
     for r in rows:
         if is_gemini_class(r["name"]):
             key = "seven_day" if r["window"] == "7d" else "five_hour"
-            usage.setdefault(key, {k: v for k, v in r.items() if k in ("pct", "resets_at")})
+            usage.setdefault(key, {k: v for k, v in r.items() if k in ("pct", "resets_at", "not_started")})
     return usage
 
 

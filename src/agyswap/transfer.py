@@ -472,6 +472,8 @@ def usage_from_json(value: object) -> dict:
                     or pace.parse_ts(resets_at) is None:
                 raise ValueError(f"resetsAt of {name} must be an ISO 8601 timestamp")
             row["resets_at"] = resets_at
+        elif w.get("notStarted") is True:
+            row["not_started"] = True
         rows.append(row)
     return usage.to_usage(rows)
 

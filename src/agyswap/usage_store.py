@@ -12,6 +12,7 @@ from pathlib import Path
 
 from agyswap import paths
 from agyswap.fsutil import atomic_write_json, file_lock, read_json
+from agyswap.usage import mark_cached  # imported by name: gemini_pcts and poll_interval take a parameter called usage
 
 SCHEMA_VERSION = 1
 SERVE_TTL_S = 180.0
@@ -121,7 +122,7 @@ class UsageCache:
         if not isinstance(row, dict):
             return Entry()
         fetched_at = _num(row.get("fetchedAt"))
-        last_good = row.get("lastGood") if isinstance(row.get("lastGood"), dict) else None
+        last_good = mark_cached(row["lastGood"]) if isinstance(row.get("lastGood"), dict) else None
         return Entry(
             last_good=last_good,
             fetched_at=fetched_at,

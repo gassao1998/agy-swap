@@ -14,7 +14,7 @@ from agyswap.errors import AgyswapError
 from agyswap.tui import appearance
 from agyswap.tui.data import SnapshotSource, run_action
 from agyswap.usage import FetchResult, parse_usage
-from agyswap.usage_store import UsageCache
+from agyswap.usage_store import Entry, UsageCache
 from tests.helpers import TempHome, live
 from tests.test_usage import FREE
 
@@ -169,6 +169,14 @@ class RunActionTest(unittest.TestCase):
             self.assertIs(sys.stdout, outer)
         self.assertEqual(box[0].text, "mine\ndone")
         self.assertEqual(outer.getvalue(), "theirs\n")
+
+
+@unittest.skipUnless(HAS_TEXTUAL, "textual is not installed (the tui extra)")
+class WindowRowsTest(unittest.TestCase):
+    def test_not_started_suffix(self):
+        from agyswap.tui.app import window_rows
+        entry = Entry(last_good=parse_usage("Gemini Models\tWeekly Limit Remaining\t100%\t1970-01-01T00:00:00Z\n"), fetched_at=1.0)
+        self.assertEqual(window_rows(entry, 2.0)[0][2], "not started yet")
 
 
 class AppearanceTest(unittest.TestCase):

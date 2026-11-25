@@ -261,6 +261,15 @@ class PaceAndTimeTest(unittest.TestCase):
         self.assertFalse(pace.unstarted({"pct": 3, "window": "7d", "resets_at": output.iso(fetched + 7 * 86400)},
                                         fetched))
 
+    def test_not_started_window_text_and_json(self):
+        u = parse_usage("Gemini Models\tWeekly Limit Remaining\t100%\t1970-01-01T00:00:00Z\n")
+        text = "\n".join(output.usage_lines(u, time.time()))
+        self.assertIn("not started yet", text)
+        self.assertNotIn("passed", text)
+        w = output.usage_to_json(u, time.time())["sevenDay"]
+        self.assertTrue(w["notStarted"])
+        self.assertNotIn("resetsAt", w)
+
     def test_window_json_pace_only_on_weekly(self):
         fetched = time.time()
         u = parse_usage(PRO)
