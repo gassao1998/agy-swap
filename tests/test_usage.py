@@ -49,6 +49,17 @@ class ParseTest(unittest.TestCase):
         self.assertEqual(u["seven_day"]["resets_at"], "2026-11-28T10:45:55Z[0m")
         self.assertEqual(u["scoped"][1]["resets_at"], "2026-11-29T04:38:52Z")
 
+    def test_epoch_zero_reset_means_not_started(self):
+        rows = usage.parse_lines("Gemini Models\tWeekly Limit Remaining\t100%\t1970-01-01T00:00:00Z\n"
+                                 "Claude and GPT models\tWeekly Limit Remaining\t99%\t2026-11-29T04:38:52Z\n")
+        self.assertNotIn("resets_at", rows[0])
+        self.assertTrue(rows[0]["not_started"])
+        self.assertEqual(rows[1]["resets_at"], "2026-11-29T04:38:52Z")
+        self.assertNotIn("not_started", rows[1])
+        # the same value in an old cache entry
+        cached = usage.mark_cached({"seven_day": {"pct": 0.0, "resets_at": "1970-01-01T00:00:00Z"}})
+        self.assertEqual(cached["seven_day"], {"pct": 0.0, "not_started": True})
+
     def test_odd_reset_times_do_not_crash(self):
         from agyswap import output, pace
         for value in ("0001-01-01T00:00:00", "9999-12-31T23:59:59", "garbage", "2026-11-28T10:45:55Z[0m", 5, None):

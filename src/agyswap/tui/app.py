@@ -87,7 +87,7 @@ def window_rows(entry: Entry, now: float) -> list[tuple[str, float, str, bool]]:
             continue
         weekly = w.get("window", "7d") == "7d"
         cell, ts = output.reset_strings(w.get("resets_at"), now), pace.parse_ts(w.get("resets_at"))
-        suffix = "" if cell is None else "reset passed" if ts is not None and ts <= now else f"resets {cell[0]} · {cell[1]}"
+        suffix = "not started yet" if w.get("not_started") else "" if cell is None else "reset passed" if ts is not None and ts <= now else f"resets {cell[0]} · {cell[1]}"
         if w["pct"] >= 100:
             suffix += "  (!)"
         elif weekly and (p := pace.compute(w, entry.fetched_at)) is not None and p.ahead:

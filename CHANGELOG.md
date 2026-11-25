@@ -199,6 +199,8 @@
 - Usage claims are released when a query raises or is interrupted, count for at most 150 s from now whatever
   `claimUntil` says, are re-checked under the cache lock (another process that just recorded a result wins), and
   the cache reads the clock after taking its lock.
+- A usage window that agy reports with a 1970 reset time (it has not started yet) is now shown as "not started yet"
+  and left out of reset times and pacing, instead of "resets 1/1 08:00 passed".
 
 ### How accounts are kept apart
 

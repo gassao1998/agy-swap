@@ -58,6 +58,8 @@ def window_json(w: dict, fetched_at: float | None = None, weekly: bool = False, 
         cell = reset_strings(w["resets_at"], now)
         if cell:
             out["countdown"], out["clock"] = cell
+    elif w.get("not_started"):
+        out["notStarted"] = True
     if weekly and fetched_at is not None:
         p = pace.compute(w, fetched_at)
         if p is not None:
@@ -184,6 +186,8 @@ def _window_body(w: dict, fetched_at: float | None, now: float | None) -> str:
         marker = "  (ahead of pace)" if p and p.ahead else ""
     cell = reset_strings(w.get("resets_at"), now)
     body = f"{w['pct']:>3.0f}%"
+    if w.get("not_started"):
+        return body + "   not started yet" + marker
     reset_ts = pace.parse_ts(w.get("resets_at"))
     if cell and reset_ts is not None and reset_ts < (time.time() if now is None else now):
         body += f"   resets {cell[1]:<12}  passed (this figure is from before the reset)"  # not printed as "in 0m" (cswap #376)
